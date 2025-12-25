@@ -108,7 +108,7 @@ NOMA operates as a modern compiler pipeline based on LLVM and MLIR infrastructur
 
 We are currently in the **Bootstrap Phase**. The immediate goal is not full GPU support, but achieving the "Tipping Point": a minimal compiler capable of differentiating a scalar function on the CPU.
 
-### Milestone 1: The Skeleton ✅ COMPLETED
+### Milestone 1: The Skeleton - COMPLETED
 
 *Objective: Syntax recognition and AST construction.*
 
