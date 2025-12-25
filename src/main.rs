@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use noma_compiler::{Lexer, NomaError};
+use noma_compiler::Lexer;
 use std::fs;
 use std::path::PathBuf;
 

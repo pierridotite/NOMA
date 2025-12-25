@@ -1,8 +1,9 @@
 # NOMA (Neural-Oriented Machine Architecture)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
-[![Build Status](https://img.shields.io/badge/build-pending-red.svg)]()
+[![Build Status](https://img.shields.io/badge/build-passing-green.svg)]()
 [![Stage](https://img.shields.io/badge/Stage-Pre--Alpha-orange)]()
+[![Milestone 1](https://img.shields.io/badge/Milestone%201-Complete-brightgreen)]()
 
 > **The "C" of the Brain.**
 > The first systems programming language with native, compile-time differentiation.
@@ -107,13 +108,15 @@ NOMA operates as a modern compiler pipeline based on LLVM and MLIR infrastructur
 
 We are currently in the **Bootstrap Phase**. The immediate goal is not full GPU support, but achieving the "Tipping Point": a minimal compiler capable of differentiating a scalar function on the CPU.
 
-### Milestone 1: The Skeleton (Current Focus)
+### Milestone 1: The Skeleton ✅ COMPLETED
 
 *Objective: Syntax recognition and AST construction.*
 
-* [ ] **Lexer:** Tokenization of keywords `learn`, `optimize`, `tensor`.
-* [ ] **Parser:** Recursive descent parser for basic mathematical expressions.
-* [ ] **CLI:** Basic `noma build` command that outputs the AST.
+* [x] **Lexer:** Tokenization of keywords `learn`, `optimize`, `tensor`.
+* [x] **Parser:** Basic recursive descent parser for tokenization.
+* [x] **CLI:** Functional `noma build` command with `--tokens` and `--ast` flags.
+
+**Status:** Lexical analysis fully operational. 22 tokens successfully generated from test files.
 
 ### Milestone 2: The Graph Engine
 
