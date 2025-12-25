@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Build Status](https://img.shields.io/badge/build-passing-green.svg)]()
 [![Stage](https://img.shields.io/badge/Stage-Pre--Alpha-orange)]()
-[![Milestone 1](https://img.shields.io/badge/Milestone%201-Complete-brightgreen)]()
+[![Milestone 2](https://img.shields.io/badge/Milestone%202-Complete-brightgreen)]()
 
 > **The "C" of the Brain.**
 > The first systems programming language with native, compile-time differentiation.
@@ -108,6 +108,8 @@ NOMA operates as a modern compiler pipeline based on LLVM and MLIR infrastructur
 
 We are currently in the **Bootstrap Phase**. The immediate goal is not full GPU support, but achieving the "Tipping Point": a minimal compiler capable of differentiating a scalar function on the CPU.
 
+**Current Milestone:** Milestone 2 - The Graph Engine (COMPLETED)
+
 ### Milestone 1: The Skeleton - COMPLETED
 
 *Objective: Syntax recognition and AST construction.*
@@ -118,13 +120,15 @@ We are currently in the **Bootstrap Phase**. The immediate goal is not full GPU 
 
 **Status:** Lexical analysis fully operational. 22 tokens successfully generated from test files.
 
-### Milestone 2: The Graph Engine
+### Milestone 2: The Graph Engine - COMPLETED
 
 *Objective: Internal Representation (IR).*
 
-* [ ] **Lowering:** Converting AST to a computational graph.
-* [ ] **State Management:** Implementing the `{value, gradient}` memory structure.
-* [ ] **Forward Pass:** Executing simple arithmetic operations.
+* [x] **Lowering:** Converting AST to a computational graph.
+* [x] **State Management:** Implementing the `{value, gradient}` memory structure.
+* [x] **Forward Pass:** Executing simple arithmetic operations.
+
+**Status:** Parser fully operational. AST construction working. Computational graph IR implemented with forward pass evaluation. All 12 unit tests passing.
 
 ### Milestone 3: The Tipping Point (MVP)
 

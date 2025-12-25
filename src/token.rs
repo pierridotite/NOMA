@@ -28,13 +28,18 @@ pub enum TokenType {
     Minus,       // -
     Star,        // *
     Slash,       // /
+    Percent,     // %
+    Power,       // ** or ^
     Assign,      // =
     Lt,          // <
     Gt,          // >
     LtEq,        // <=
     GtEq,        // >=
-    Eq,          // ==
+    Equal,       // ==
     NotEq,       // !=
+    And,         // &&
+    Or,          // ||
+    Not,         // !
     Dot,         // .
     
     // Delimiters

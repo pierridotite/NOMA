@@ -86,7 +86,7 @@ impl Lexer {
             '=' => {
                 if self.peek() == '=' {
                     self.advance();
-                    TokenType::Eq
+                    TokenType::Equal
                 } else {
                     TokenType::Assign
                 }
@@ -251,7 +251,7 @@ mod tests {
         assert_eq!(tokens[2].token_type, TokenType::Star);
         assert_eq!(tokens[3].token_type, TokenType::Slash);
         assert_eq!(tokens[4].token_type, TokenType::Assign);
-        assert_eq!(tokens[5].token_type, TokenType::Eq);
+        assert_eq!(tokens[5].token_type, TokenType::Equal);
         assert_eq!(tokens[10].token_type, TokenType::NotEq);
         assert_eq!(tokens[11].token_type, TokenType::Arrow);
     }
