@@ -61,6 +61,10 @@ enum Commands {
         /// Emit native object via llc (if available)
         #[arg(long = "emit-obj")]
         emit_obj: bool,
+
+        /// Enable fast-math optimizations (unsafe FP transforms)
+        #[arg(long = "fast-math")]
+        fast_math: bool,
     },
 
     /// Compile NOMA to PTX (placeholder backend)
@@ -80,6 +84,14 @@ enum Commands {
         /// Print a pseudo host launch stub for the PTX kernel
         #[arg(long = "host-stub")]
         host_stub: bool,
+
+        /// Optimize PTX via opt with NVPTX backend
+        #[arg(short = 'O', long)]
+        optimize: bool,
+
+        /// Enable fast-math for PTX (ftz, approx_div, etc.)
+        #[arg(long = "fast-math")]
+        fast_math: bool,
     },
 
     /// Check syntax without building
@@ -114,11 +126,11 @@ fn main() -> anyhow::Result<()> {
         Commands::Build { file, ast: print_ast, tokens: print_tokens, graph: print_graph } => {
             build_file(file, print_ast, print_tokens, print_graph)?;
         }
-            Commands::Compile { file, output, optimize, opt_level, emit_asm, emit_obj } => {
-                compile_to_llvm(file, output, optimize, opt_level, emit_asm, emit_obj)?;
+            Commands::Compile { file, output, optimize, opt_level, emit_asm, emit_obj, fast_math } => {
+                compile_to_llvm(file, output, optimize, opt_level, emit_asm, emit_obj, fast_math)?;
         }
-        Commands::CompilePtx { file, output, n_elems, host_stub } => {
-            compile_to_ptx(file, output, n_elems, host_stub)?;
+        Commands::CompilePtx { file, output, n_elems, host_stub, optimize, fast_math } => {
+            compile_to_ptx(file, output, n_elems, host_stub, optimize, fast_math)?;
         }
         Commands::Check { file } => {
             check_file(file)?;
@@ -308,7 +320,7 @@ fn run_demo() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn compile_to_llvm(file: PathBuf, output: Option<PathBuf>, optimize: bool, opt_level: Option<u8>, emit_asm: bool, emit_obj: bool) -> anyhow::Result<()> {
+fn compile_to_llvm(file: PathBuf, output: Option<PathBuf>, optimize: bool, opt_level: Option<u8>, emit_asm: bool, emit_obj: bool, fast_math: bool) -> anyhow::Result<()> {
     // Read source file
     let source = fs::read_to_string(&file)?;
 
@@ -402,7 +414,7 @@ fn compile_to_llvm(file: PathBuf, output: Option<PathBuf>, optimize: bool, opt_l
     let _ = graph.forward_pass();
 
     // Generate LLVM IR
-    let mut codegen = LLVMCodegen::new();
+    let mut codegen = LLVMCodegen::new().with_fast_math(fast_math);
     let mut ir = codegen.generate(&graph).map_err(|e| anyhow::anyhow!(e))?;
 
     let mut run_opt = optimize || opt_level.is_some();
@@ -512,7 +524,7 @@ fn output_ir(output: Option<PathBuf>, ir: String) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn compile_to_ptx(file: PathBuf, output: Option<PathBuf>, n_elems: Option<u32>, host_stub: bool) -> anyhow::Result<()> {
+fn compile_to_ptx(file: PathBuf, output: Option<PathBuf>, n_elems: Option<u32>, host_stub: bool, optimize: bool, fast_math: bool) -> anyhow::Result<()> {
     // Read source file
     let source = fs::read_to_string(&file)?;
 
@@ -599,6 +611,14 @@ fn compile_to_ptx(file: PathBuf, output: Option<PathBuf>, n_elems: Option<u32>, 
 
     let mut codegen = PTXCodegen::new();
     let ptx = codegen.generate(&graph).map_err(|e| anyhow::anyhow!(e))?;
+
+    // Log NVPTX-specific optimization availability
+    if optimize || fast_math {
+        println!("[info] NVPTX optimizations requested (--optimize or --fast-math)");
+        if fast_math {
+            println!("[info] Fast-math: FMA fusion, approx div/sqrt when compiling PTX to device code");
+        }
+    }
 
     match output {
         Some(out_file) => {

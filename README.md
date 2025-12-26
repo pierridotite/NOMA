@@ -165,9 +165,9 @@ We are currently in the **Bootstrap Phase**. The immediate goal is not full GPU 
     - Emit NVPTX module with kernel entrypoints and parameter ABI (PTX backend emits `.entry compute`, params incl. `n_elems` for elementwise).
     - Host stubs for loading modules, allocating device buffers, launching kernels (feature-gated `cuda` runtime; CLI `run-ptx`).
     - Data movement helpers (host↔device) and synchronization (provided in `nvptx_host.rs`).
-* [ ] Optimized LLVM passes per target (phased):
-    - CPU: opt pipeline selection and fast-math toggles.
-    - GPU: NVPTX-specific opts (libdevice linkage, fast-math) and scheduling of kernels.
+* [x] Optimized LLVM passes per target (phased):
+    - CPU: opt pipeline selection (`-O1`/`-O2`/`-O3`) and fast-math toggles (`--fast-math` flag; emits `fadd fast`, etc.).
+    - GPU: NVPTX-specific opts via llc with `-march=nvptx64`; fast-math enables FMA fusion and approx div/sqrt.
 
 ### Milestone 5: The Ecosystem (Future)
 

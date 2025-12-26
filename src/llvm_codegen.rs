@@ -5,11 +5,17 @@ use std::collections::HashMap;
 /// Converts a computational graph to LLVM Intermediate Representation
 pub struct LLVMCodegen {
     counter: usize,
+    fast_math: bool,
 }
 
 impl LLVMCodegen {
     pub fn new() -> Self {
-        Self { counter: 0 }
+        Self { counter: 0, fast_math: false }
+    }
+
+    pub fn with_fast_math(mut self, enabled: bool) -> Self {
+        self.fast_math = enabled;
+        self
     }
 
     fn fmt_f64(&self, v: f64) -> String {
@@ -85,18 +91,19 @@ impl LLVMCodegen {
                     let left_var = var_map.get(&node.inputs[0]).ok_or("Left operand not found")?;
                     let right_var = var_map.get(&node.inputs[1]).ok_or("Right operand not found")?;
 
+                    let fmf = if self.fast_math { " fast" } else { "" };
                     match op_str.as_str() {
                         "add" => {
-                            ir.push_str(&format!("  {} = fadd double {}, {}\n", var, left_var, right_var));
+                            ir.push_str(&format!("  {} = fadd{} double {}, {}\n", var, fmf, left_var, right_var));
                         }
                         "sub" => {
-                            ir.push_str(&format!("  {} = fsub double {}, {}\n", var, left_var, right_var));
+                            ir.push_str(&format!("  {} = fsub{} double {}, {}\n", var, fmf, left_var, right_var));
                         }
                         "mul" => {
-                            ir.push_str(&format!("  {} = fmul double {}, {}\n", var, left_var, right_var));
+                            ir.push_str(&format!("  {} = fmul{} double {}, {}\n", var, fmf, left_var, right_var));
                         }
                         "div" => {
-                            ir.push_str(&format!("  {} = fdiv double {}, {}\n", var, left_var, right_var));
+                            ir.push_str(&format!("  {} = fdiv{} double {}, {}\n", var, fmf, left_var, right_var));
                         }
                         "mod" => {
                             ir.push_str(&format!("  {} = frem double {}, {}\n", var, left_var, right_var));
