@@ -390,6 +390,24 @@ Syntax highlighting is available for `.noma` files. See the [`noma-vscode`](./no
 - ✅ Core math stdlib (sin, cos, tanh, exp, log, sqrt, abs, floor, ceil; f64; autodiff except floor/ceil)
 - ✅ Control flow (if/else, while; executed at compile-time lowering)
 
+### Known limitations (current gaps)
+
+- **No user-defined functions**: all code lives in `fn main()`; you cannot define or call your own functions
+- Only SGD optimizer (no Adam/RMSprop)
+- No batching, dataset IO, or model serialization
+- C interop: double-only, no autodiff, interpreter (`run`) cannot execute externs
+- GPU PTX backend: experimental, elementwise `f64` only, demo host stub
+- Stdlib: limited to a few math functions `f64`; no RNG/BLAS/FFT
+- Control flow is evaluated at lowering: non-taken branches are not compiled; `while` expands the graph
+- No autodiff through `floor`/`ceil` or external calls
+- **Single data type**: only `f64`; no integers, strings, or booleans as first-class types
+- **No nested tensors** or dynamic shapes; tensor dimensions must be known at compile-time
+- **Struct definitions** are parsed but have no runtime semantics yet
+- **No error recovery** in parser; first syntax error aborts compilation
+- **No module/import system**: everything must be in a single file
+- **No debugging support** (no breakpoints, no source maps)
+- **Comparison ops** (`==`, `<`, etc.) return `0.0`/`1.0` scalars, not true booleans
+
 ### Planned
 
 - 🔲 User-defined functions
