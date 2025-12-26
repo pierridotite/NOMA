@@ -1,0 +1,44 @@
+// Example 19: Dynamic Network Growth
+// Demonstrates automatic network capacity growth during training
+
+fn main() {
+    // Target value to learn
+    let target = 10.0;
+    
+    // Start with minimal capacity - 1 neuron
+    let capacity = 1.0;
+    alloc hidden = [capacity];
+    
+    // Learnable weight
+    learn w = 0.5;
+    
+    // Training parameters
+    let learning_rate = 0.01;
+    let max_iterations = 100;
+    
+    // Train with initial capacity
+    optimize(w) until loss < 0.1 {
+        let pred = w * capacity;  // Simple prediction
+        let error = pred - target;
+        let loss = error * error;
+        minimize loss;
+    }
+    
+    // Check if we need more capacity (simulated by loss threshold)
+    // Since loss > 0.1 initially, we grow the network
+    
+    // Grow to 2 neurons
+    let new_capacity = 2.0;
+    realloc hidden = [new_capacity];
+    
+    // Continue training with more capacity
+    optimize(w) until loss < 0.01 {
+        let pred = w * new_capacity;
+        let error = pred - target;
+        let loss = error * error;
+        minimize loss;
+    }
+    
+    // Final weight should be target / new_capacity = 10 / 2 = 5
+    return w;
+}

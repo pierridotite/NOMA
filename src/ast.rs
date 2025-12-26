@@ -113,6 +113,12 @@ pub enum Statement {
     Free {
         name: String,
     },
+    /// Reallocation: realloc name = [new_shape];
+    /// Resizes a heap-allocated tensor (preserves data where possible)
+    Realloc {
+        name: String,
+        shape: Vec<Expression>,
+    },
 }
 
 /// Function definition

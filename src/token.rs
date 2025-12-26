@@ -20,6 +20,7 @@ pub enum TokenType {
     GpuStruct,   // gpu_struct
     Alloc,       // alloc
     Free,        // free
+    Realloc,     // realloc
     
     // Types
     Tensor,      // tensor
@@ -98,6 +99,7 @@ impl fmt::Display for TokenType {
             TokenType::GpuStruct => write!(f, "gpu_struct"),
             TokenType::Alloc => write!(f, "alloc"),
             TokenType::Free => write!(f, "free"),
+            TokenType::Realloc => write!(f, "realloc"),
             TokenType::Tensor => write!(f, "tensor"),
             TokenType::Identifier(name) => write!(f, "identifier({})", name),
             TokenType::Number(n) => write!(f, "number({})", n),

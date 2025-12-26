@@ -367,6 +367,58 @@ impl ComputationalGraph {
         self.heap_allocations.get(name).copied()
     }
 
+    /// Reallocate a heap tensor with a new shape (preserves data where possible)
+    pub fn realloc_heap_tensor(&mut self, name: &str, new_shape: Vec<usize>) -> Result<NodeId, String> {
+        // Get the old node and its data
+        let old_node_id = self.heap_allocations.get(name)
+            .ok_or_else(|| format!("Cannot realloc '{}': not a heap-allocated tensor", name))?
+            .clone();
+        
+        // Get old data
+        let old_data = self.nodes.get(&old_node_id)
+            .and_then(|n| n.value.clone())
+            .and_then(|v| match v {
+                Value::Tensor(t) => Some(t.data),
+                _ => None,
+            })
+            .unwrap_or_default();
+        
+        // Mark old node as freed
+        if let Some(node) = self.nodes.get_mut(&old_node_id) {
+            node.node_type = NodeType::FreedTensor(name.to_string());
+            node.value = None;
+            node.gradient = None;
+        }
+        
+        // Calculate new size
+        let new_size: usize = new_shape.iter().product();
+        
+        // Create new data, copying from old where possible
+        let mut new_data = vec![0.0; new_size];
+        let copy_len = old_data.len().min(new_size);
+        new_data[..copy_len].copy_from_slice(&old_data[..copy_len]);
+        
+        // Create new node
+        let new_id = NodeId::new(self.next_id);
+        self.next_id += 1;
+        
+        let tensor = Tensor::new(new_data, new_shape.clone())?;
+        let grad = Value::Tensor(Tensor::zeros(new_shape));
+        
+        let node = Node {
+            id: new_id,
+            node_type: NodeType::HeapTensor(name.to_string()),
+            inputs: Vec::new(),
+            value: Some(Value::Tensor(tensor)),
+            gradient: Some(grad),
+        };
+        
+        self.nodes.insert(new_id, node);
+        self.heap_allocations.insert(name.to_string(), new_id);
+        
+        Ok(new_id)
+    }
+
     pub fn build_from_expression(&mut self, expr: &Expression, variables: &HashMap<String, NodeId>) -> Result<NodeId, String> {
         self.build_from_expression_with_functions(expr, variables, &FunctionRegistry::new())
     }
@@ -574,6 +626,22 @@ impl ComputationalGraph {
                     self.free_heap_tensor(name)?;
                     variables.remove(name);
                     // free doesn't produce a value, but we keep last_node unchanged
+                }
+                Statement::Realloc { name, shape } => {
+                    // Evaluate shape dimensions at lowering time
+                    let mut dims = Vec::new();
+                    for dim_expr in shape {
+                        let dim_id = self.build_from_expression_with_functions(dim_expr, variables, functions)?;
+                        self.forward_pass()?;
+                        let dim_val = self.get_node(dim_id)
+                            .and_then(|n| n.value.clone())
+                            .and_then(|v| match v { Value::Scalar(s) => Some(s as usize), _ => None })
+                            .ok_or_else(|| format!("Realloc dimension must be a scalar for '{}'", name))?;
+                        dims.push(dim_val);
+                    }
+                    let node_id = self.realloc_heap_tensor(name, dims)?;
+                    variables.insert(name.clone(), node_id);
+                    last_node = Some(node_id);
                 }
             }
         }

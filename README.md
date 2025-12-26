@@ -222,6 +222,9 @@ alloc workspace = [rows, cols];
 // Access elements like any tensor
 let element = buffer[1][2];
 
+// Resize tensor during execution (preserves existing data)
+realloc buffer = [5, 5];
+
 // Free when no longer needed
 free buffer;
 ```
@@ -230,6 +233,7 @@ Dynamic allocation enables:
 - **Heap-based network growth**: Create layers with sizes determined at runtime
 - **Workspace management**: Allocate scratch space for computations
 - **Memory efficiency**: Free tensors when no longer needed
+- **Dynamic topology**: Grow networks during training with `realloc`
 
 ---
 
@@ -277,6 +281,8 @@ Dynamic allocation enables:
 |---------|-------------|---------|
 | `17_dynamic_alloc.noma` | Heap tensor allocation | alloc with dynamic shapes |
 | `18_dynamic_network.noma` | Dynamic workspace | Network with allocated buffers |
+| `19_dynamic_growth.noma` | Grow capacity during training | realloc for dynamic growth |
+| `20_growing_network.noma` | Multi-phase network growth | alloc → realloc → free lifecycle |
 
 ### Linear Regression Example
 
@@ -479,7 +485,8 @@ Syntax highlighting is available for `.noma` files. See the [`noma-vscode`](./no
 - ✅ Core math stdlib (sin, cos, tanh, exp, log, sqrt, abs, floor, ceil; f64; autodiff except floor/ceil)
 - ✅ Control flow (if/else, while; executed at compile-time lowering)
 - ✅ User-defined functions (inlined at compile-time, full autodiff support)
-- ✅ Dynamic allocation (`alloc`/`free` keywords for heap-based tensor management)
+- ✅ Dynamic allocation (`alloc`/`free`/`realloc` keywords for heap-based tensor management with dynamic resizing)
+
 
 ### Known limitations (current gaps)
 

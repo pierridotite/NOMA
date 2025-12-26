@@ -146,6 +146,22 @@ fn lower_statements_shared(
                 variables.remove(name);
                 // free doesn't change last_node
             }
+            noma_compiler::Statement::Realloc { name, shape } => {
+                // Evaluate shape dimensions at lowering time
+                let mut dims = Vec::new();
+                for dim_expr in shape {
+                    let dim_id = graph.build_from_expression_with_functions(dim_expr, variables, func_registry)?;
+                    graph.forward_pass()?;
+                    let dim_val = graph.get_node(dim_id)
+                        .and_then(|n| n.value.clone())
+                        .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s as usize), _ => None })
+                        .ok_or_else(|| format!("Realloc dimension must be a scalar for '{}'", name))?;
+                    dims.push(dim_val);
+                }
+                let node_id = graph.realloc_heap_tensor(name, dims)?;
+                variables.insert(name.clone(), node_id);
+                *last_node = Some(node_id);
+            }
         }
     }
     Ok(())

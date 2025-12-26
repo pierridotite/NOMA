@@ -1,0 +1,52 @@
+// Example 20: Auto-Growing Neural Network
+// Demonstrates dynamic network capacity growth during training using realloc
+
+fn main() {
+    // Target: we want output = 12.0
+    let target = 12.0;
+    
+    // ====== PHASE 1: Start with small capacity ======
+    alloc neurons = [1];  // Start with 1 "slot"
+    
+    learn w = 0.5;  // weight to optimize
+    
+    // With capacity=1, we can only achieve w * 1 = target
+    // So w needs to be 12.0
+    optimize w until loss < 1.0 {
+        let capacity = 1.0;
+        let pred = w * capacity;
+        let error = pred - target;
+        let loss = error * error;
+        minimize loss;
+    }
+    
+    // After Phase 1, w should be around 12.0
+    let phase1_w = w;
+    
+    // ====== PHASE 2: Grow network capacity ======
+    // Now expand to 3 neurons
+    realloc neurons = [3];
+    
+    // With capacity=3, we can achieve w * 3 = target
+    // So w needs to be 4.0
+    // But we don't want to retrain from scratch - 
+    // we continue from where we left off
+    
+    optimize w until loss < 0.001 {
+        let capacity = 3.0;
+        let pred = w * capacity;
+        let error = pred - target;
+        let loss = error * error;
+        minimize loss;
+    }
+    
+    // After Phase 2, w should be around 4.0
+    let phase2_w = w;
+    
+    // Final prediction
+    let final_pred = phase2_w * 3.0;  // Should be ~12.0
+    
+    free neurons;
+    
+    return final_pred;
+}

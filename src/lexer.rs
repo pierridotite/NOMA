@@ -217,6 +217,7 @@ impl Lexer {
             "tensor" => TokenType::Tensor,
             "alloc" => TokenType::Alloc,
             "free" => TokenType::Free,
+            "realloc" => TokenType::Realloc,
             _ => TokenType::Identifier(word),
         }
     }

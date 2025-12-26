@@ -196,6 +196,7 @@ impl Parser {
             TokenType::Return => self.parse_return(),
             TokenType::Alloc => self.parse_alloc(),
             TokenType::Free => self.parse_free(),
+            TokenType::Realloc => self.parse_realloc(),
             _ => {
                 // Handle assignment: identifier '=' expr;
                 if matches!(self.peek().token_type, TokenType::Identifier(_)) && matches!(self.peek_next().map(|t| &t.token_type), Some(TokenType::Assign)) {
@@ -339,6 +340,30 @@ impl Parser {
         self.consume(TokenType::Semicolon, "Expected ';'")?;
         
         Ok(Statement::Free { name })
+    }
+
+    /// Parse 'realloc' statement: realloc name = [dim1, dim2, ...];
+    fn parse_realloc(&mut self) -> Result<Statement, NomaError> {
+        self.consume(TokenType::Realloc, "Expected 'realloc'")?;
+        let name = self.parse_identifier("Expected variable name")?;
+        self.consume(TokenType::Assign, "Expected '='")?;
+        self.consume(TokenType::LBracket, "Expected '[' for shape dimensions")?;
+        
+        let mut shape = Vec::new();
+        if !matches!(self.peek().token_type, TokenType::RBracket) {
+            loop {
+                shape.push(self.parse_expression()?);
+                if !matches!(self.peek().token_type, TokenType::Comma) {
+                    break;
+                }
+                self.advance(); // consume comma
+            }
+        }
+        
+        self.consume(TokenType::RBracket, "Expected ']'")?;
+        self.consume(TokenType::Semicolon, "Expected ';'")?;
+        
+        Ok(Statement::Realloc { name, shape })
     }
 
     /// Parse an expression with operator precedence
