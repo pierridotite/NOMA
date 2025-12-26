@@ -1,0 +1,18 @@
+// Example: CSV File I/O in NOMA
+// Demonstrates loading data from CSV and saving results
+
+fn main() {
+    // Load data from a CSV file
+    // The CSV should contain numeric values (one per line or comma-separated)
+    load_csv data = "examples/data/sample_data.csv";
+    
+    // Perform some computation on the data
+    let scaled = data * 2.0;
+    let result = scaled + 1.0;
+    
+    // Save the result to a new CSV file
+    save_csv result, "examples/data/output.csv";
+    
+    // Return the mean of the result
+    return mean(result);
+}

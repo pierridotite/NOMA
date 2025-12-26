@@ -197,6 +197,11 @@ impl Parser {
             TokenType::Alloc => self.parse_alloc(),
             TokenType::Free => self.parse_free(),
             TokenType::Realloc => self.parse_realloc(),
+            TokenType::LoadCsv => self.parse_load_csv(),
+            TokenType::SaveCsv => self.parse_save_csv(),
+            TokenType::LoadSafetensors => self.parse_load_safetensors(),
+            TokenType::SaveSafetensors => self.parse_save_safetensors(),
+            TokenType::Batch => self.parse_batch_loop(),
             _ => {
                 // Handle assignment: identifier '=' expr;
                 if matches!(self.peek().token_type, TokenType::Identifier(_)) && matches!(self.peek_next().map(|t| &t.token_type), Some(TokenType::Assign)) {
@@ -364,6 +369,127 @@ impl Parser {
         self.consume(TokenType::Semicolon, "Expected ';'")?;
         
         Ok(Statement::Realloc { name, shape })
+    }
+
+    /// Parse 'load_csv' statement: let name = load_csv("path.csv");
+    fn parse_load_csv(&mut self) -> Result<Statement, NomaError> {
+        self.consume(TokenType::LoadCsv, "Expected 'load_csv'")?;
+        let name = self.parse_identifier("Expected variable name")?;
+        self.consume(TokenType::Assign, "Expected '='")?;
+
+        let path = self.parse_string_literal("Expected file path string")?;
+        self.consume(TokenType::Semicolon, "Expected ';'")?;
+        
+        Ok(Statement::LoadCsv { name, path })
+    }
+
+    /// Parse 'save_csv' statement: save_csv tensor, "path.csv";
+    fn parse_save_csv(&mut self) -> Result<Statement, NomaError> {
+        self.consume(TokenType::SaveCsv, "Expected 'save_csv'")?;
+        let tensor = self.parse_expression()?;
+        self.consume(TokenType::Comma, "Expected ',' after tensor expression")?;
+        let path = self.parse_string_literal("Expected file path string")?;
+        self.consume(TokenType::Semicolon, "Expected ';'")?;
+        
+        Ok(Statement::SaveCsv { tensor, path })
+    }
+
+    /// Parse 'load_safetensors' statement: load_safetensors name = "path.safetensors";
+    fn parse_load_safetensors(&mut self) -> Result<Statement, NomaError> {
+        self.consume(TokenType::LoadSafetensors, "Expected 'load_safetensors'")?;
+        let name = self.parse_identifier("Expected variable name")?;
+        self.consume(TokenType::Assign, "Expected '='")?;
+
+        let path = self.parse_string_literal("Expected file path string")?;
+        self.consume(TokenType::Semicolon, "Expected ';'")?;
+        
+        Ok(Statement::LoadSafetensors { name, path })
+    }
+
+    /// Parse 'save_safetensors' statement: save_safetensors { name1: tensor1, name2: tensor2 }, "path.safetensors";
+    fn parse_save_safetensors(&mut self) -> Result<Statement, NomaError> {
+        self.consume(TokenType::SaveSafetensors, "Expected 'save_safetensors'")?;
+        self.consume(TokenType::LBrace, "Expected '{' for tensor dictionary")?;
+        
+        let mut tensors = Vec::new();
+        if !matches!(self.peek().token_type, TokenType::RBrace) {
+            loop {
+                let tensor_name = self.parse_identifier("Expected tensor name")?;
+                self.consume(TokenType::Colon, "Expected ':' after tensor name")?;
+                let tensor_expr = self.parse_expression()?;
+                tensors.push((tensor_name, tensor_expr));
+                
+                if !matches!(self.peek().token_type, TokenType::Comma) {
+                    break;
+                }
+                self.advance(); // consume comma
+            }
+        }
+        
+        self.consume(TokenType::RBrace, "Expected '}'")?;
+        self.consume(TokenType::Comma, "Expected ',' before file path")?;
+        let path = self.parse_string_literal("Expected file path string")?;
+        self.consume(TokenType::Semicolon, "Expected ';'")?;
+        
+        Ok(Statement::SaveSafetensors { tensors, path })
+    }
+
+    /// Parse 'batch' loop: batch item, index in data with batch_size { body }
+    /// or: batch item in data with batch_size { body }
+    fn parse_batch_loop(&mut self) -> Result<Statement, NomaError> {
+        self.consume(TokenType::Batch, "Expected 'batch'")?;
+        
+        // Parse item name
+        let item_name = self.parse_identifier("Expected batch item name")?;
+        
+        // Check for optional index: batch item, index in ...
+        let index_name = if matches!(self.peek().token_type, TokenType::Comma) {
+            self.advance(); // consume comma
+            Some(self.parse_identifier("Expected batch index name")?)
+        } else {
+            None
+        };
+        
+        self.consume(TokenType::In, "Expected 'in' after batch variable(s)")?;
+        let data = self.parse_expression()?;
+        
+        // Parse 'with batch_size'
+        if !matches!(self.peek().token_type, TokenType::Identifier(ref s) if s == "with") {
+            return Err(NomaError::ParseError {
+                message: "Expected 'with' for batch size".to_string(),
+                line: self.peek().line,
+                column: self.peek().column,
+            });
+        }
+        self.advance(); // consume 'with'
+        let batch_size = self.parse_expression()?;
+        
+        self.consume(TokenType::LBrace, "Expected '{' after batch header")?;
+        let body = self.parse_block()?;
+        
+        Ok(Statement::BatchLoop {
+            item_name,
+            index_name,
+            data,
+            batch_size,
+            body,
+        })
+    }
+
+    /// Helper to parse a string literal
+    fn parse_string_literal(&mut self, error_msg: &str) -> Result<String, NomaError> {
+        match &self.peek().token_type {
+            TokenType::StringLiteral(s) => {
+                let s = s.clone();
+                self.advance();
+                Ok(s)
+            }
+            _ => Err(NomaError::ParseError {
+                message: error_msg.to_string(),
+                line: self.peek().line,
+                column: self.peek().column,
+            }),
+        }
     }
 
     /// Parse an expression with operator precedence
@@ -548,6 +674,11 @@ impl Parser {
             TokenType::Number(n) => {
                 self.advance();
                 Ok(Expression::Number(n))
+            }
+            TokenType::StringLiteral(ref s) => {
+                let s = s.clone();
+                self.advance();
+                Ok(Expression::StringLiteral(s))
             }
             TokenType::Identifier(ref name) => {
                 let name = name.clone();

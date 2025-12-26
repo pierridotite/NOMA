@@ -162,6 +162,110 @@ fn lower_statements_shared(
                 variables.insert(name.clone(), node_id);
                 *last_node = Some(node_id);
             }
+            noma_compiler::Statement::LoadCsv { name, path } => {
+                // Load CSV file and create tensor
+                let tensor_data = noma_compiler::load_csv_file(path)?;
+                let node_id = graph.add_constant_tensor(tensor_data.0, tensor_data.1)?;
+                variables.insert(name.clone(), node_id);
+                *last_node = Some(node_id);
+            }
+            noma_compiler::Statement::SaveCsv { tensor, path } => {
+                // Evaluate tensor and save to CSV
+                let tensor_id = graph.build_from_expression_with_functions(tensor, variables, func_registry)?;
+                graph.forward_pass()?;
+                let tensor_val = graph.get_node(tensor_id)
+                    .and_then(|n| n.value.clone())
+                    .ok_or_else(|| "Cannot evaluate tensor for save_csv".to_string())?;
+                noma_compiler::save_csv_file(&tensor_val, path)?;
+                *last_node = Some(tensor_id);
+            }
+            noma_compiler::Statement::LoadSafetensors { name, path } => {
+                // Load Safetensors file and create a tensor
+                let tensors = noma_compiler::load_safetensors_file(path)?;
+                if let Some((_, (data, shape))) = tensors.into_iter().next() {
+                    let node_id = graph.add_constant_tensor(data, shape)?;
+                    variables.insert(name.clone(), node_id);
+                    *last_node = Some(node_id);
+                } else {
+                    return Err(format!("No tensors found in safetensors file: {}", path));
+                }
+            }
+            noma_compiler::Statement::SaveSafetensors { tensors, path } => {
+                // Evaluate all tensors and save to Safetensors format
+                let mut tensor_map = Vec::new();
+                for (tensor_name, tensor_expr) in tensors {
+                    let tensor_id = graph.build_from_expression_with_functions(tensor_expr, variables, func_registry)?;
+                    graph.forward_pass()?;
+                    let tensor_val = graph.get_node(tensor_id)
+                        .and_then(|n| n.value.clone())
+                        .ok_or_else(|| format!("Cannot evaluate tensor '{}' for save_safetensors", tensor_name))?;
+                    tensor_map.push((tensor_name.clone(), tensor_val));
+                }
+                noma_compiler::save_safetensors_file(&tensor_map, path)?;
+            }
+            noma_compiler::Statement::BatchLoop { item_name, index_name, data, batch_size, body } => {
+                // Evaluate data tensor and batch size
+                let data_id = graph.build_from_expression_with_functions(data, variables, func_registry)?;
+                graph.forward_pass()?;
+                let data_val = graph.get_node(data_id)
+                    .and_then(|n| n.value.clone())
+                    .ok_or_else(|| "Cannot evaluate data for batch loop".to_string())?;
+                
+                let batch_size_id = graph.build_from_expression_with_functions(batch_size, variables, func_registry)?;
+                graph.forward_pass()?;
+                let batch_size_val = graph.get_node(batch_size_id)
+                    .and_then(|n| n.value.clone())
+                    .and_then(|v| v.as_scalar())
+                    .ok_or_else(|| "Batch size must be a scalar".to_string())? as usize;
+                
+                if batch_size_val == 0 {
+                    return Err("Batch size cannot be zero".to_string());
+                }
+                
+                // Get tensor data
+                let (tensor_data, tensor_shape) = match &data_val {
+                    noma_compiler::Value::Tensor(t) => (t.data.clone(), t.shape.clone()),
+                    noma_compiler::Value::Scalar(s) => (vec![*s], vec![1]),
+                };
+                
+                let num_samples = if tensor_shape.is_empty() { 1 } else { tensor_shape[0] };
+                let num_batches = (num_samples + batch_size_val - 1) / batch_size_val;
+                
+                // Iterate over batches
+                for batch_idx in 0..num_batches {
+                    let start = batch_idx * batch_size_val;
+                    let end = (start + batch_size_val).min(num_samples);
+                    
+                    // Extract batch data
+                    let batch_data = if tensor_shape.len() == 1 {
+                        tensor_data[start..end].to_vec()
+                    } else {
+                        let row_size: usize = tensor_shape[1..].iter().product();
+                        tensor_data[start * row_size..end * row_size].to_vec()
+                    };
+                    
+                    let batch_shape = if tensor_shape.len() == 1 {
+                        vec![end - start]
+                    } else {
+                        let mut shape = vec![end - start];
+                        shape.extend(&tensor_shape[1..]);
+                        shape
+                    };
+                    
+                    // Create batch tensor node
+                    let batch_node_id = graph.add_constant_tensor(batch_data, batch_shape)?;
+                    variables.insert(item_name.clone(), batch_node_id);
+                    
+                    // Optionally set index variable
+                    if let Some(idx_name) = index_name {
+                        let idx_node_id = graph.add_constant(batch_idx as f64);
+                        variables.insert(idx_name.clone(), idx_node_id);
+                    }
+                    
+                    // Execute batch body
+                    lower_statements_shared(graph, variables, body, last_node, func_registry)?;
+                }
+            }
         }
     }
     Ok(())

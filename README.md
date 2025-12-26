@@ -297,6 +297,99 @@ Dynamic allocation enables:
 - **Memory efficiency**: Free tensors when no longer needed
 - **Dynamic topology**: Grow networks during training with `realloc`
 
+### File I/O (CSV & Safetensors)
+
+Load and save tensors from/to files for data persistence and model serialization.
+
+**CSV Files:**
+
+```noma
+// Load numeric data from CSV
+load_csv data = "data.csv";
+
+// Process the data
+let scaled = data * 2.0;
+let result = scaled + 1.0;
+
+// Save results to CSV
+save_csv result, "output.csv";
+```
+
+**Safetensors Format:**
+
+```noma
+// Save multiple tensors (model weights)
+save_safetensors {
+    weights: W,
+    bias: b,
+    layer2: W2
+}, "model.safetensors";
+
+// Load tensors from file
+load_safetensors model = "model.safetensors";
+
+// Use the loaded data
+let output = matmul(X, model);
+```
+
+**Supported formats:**
+- **CSV**: Numeric data, row-major format. Handles 1D and 2D tensors.
+- **Safetensors**: Binary format for efficient model storage. Supports F32 and F64 dtypes.
+
+### Batch Processing
+
+Process data in batches for efficient training on large datasets.
+
+```noma
+// Basic batch loop
+batch item in data with batch_size {
+    // Process each batch
+    let pred = matmul(item, W);
+    print(pred);
+}
+
+// Batch loop with index
+batch item, idx in data with batch_size {
+    print(idx);        // Batch number: 0, 1, 2, ...
+    print(item);       // Batch data
+    
+    // Training on batch
+    let pred = matmul(item, W);
+    let error = pred - target;
+}
+```
+
+**Full training example with batches:**
+
+```noma
+fn main() {
+    let X = tensor [/* training data */];
+    let Y = tensor [/* labels */];
+    learn W = tensor [[0.0], [0.0]];
+    
+    let batch_size = 32.0;
+    let learning_rate = 0.01;
+    let max_iterations = 1000;
+    
+    optimize(W) until loss < 0.01 {
+        // Process all batches
+        batch x_batch in X with batch_size {
+            let pred = matmul(x_batch, W);
+        }
+        
+        // Compute overall loss
+        let Y_pred = matmul(X, W);
+        let E = Y_pred - Y;
+        let loss = mean(E * E);
+        minimize loss;
+    }
+    
+    // Save trained model
+    save_safetensors { weights: W }, "model.safetensors";
+    return W;
+}
+```
+
 ---
 
 ## Examples
@@ -359,7 +452,14 @@ Dynamic allocation enables:
 | `22_adam_optimizer.noma` | Adam optimizer | Adaptive moment estimation |
 | `23_rmsprop_optimizer.noma` | RMSprop optimizer | Root mean square propagation |
 | `24_optimizer_comparison.noma` | Compare optimizers | SGD vs Adam vs RMSprop |
+### File I/O & Batch Processing
 
+| Example | Description | Concept |
+|---------|-------------|---------|------|
+| `25_csv_io.noma` | CSV file loading and saving | load_csv, save_csv |
+| `26_safetensors_io.noma` | Safetensors model storage | load_safetensors, save_safetensors |
+| `27_batch_processing.noma` | Processing data in batches | batch loops |
+| `28_batch_training.noma` | Full mini-batch training | Batch SGD with file I/O |
 ### Linear Regression Example
 
 ```noma
@@ -563,11 +663,11 @@ Syntax highlighting is available for `.noma` files. See the [`noma-vscode`](./no
 - ✅ User-defined functions (inlined at compile-time, full autodiff support)
 - ✅ Dynamic allocation (`alloc`/`free`/`realloc` keywords for heap-based tensor management with dynamic resizing)
 - ✅ Random Number Generation (rand, rand_uniform, rand_normal, rand_tensor, xavier_init, he_init)
+- ✅ Batch processing (batch loops for mini-batch training)
+- ✅ File I/O (CSV and Safetensors formats for data loading and model serialization)
 
 
 ### Known limitations (current gaps)
-
-- No batching, dataset IO, or model serialization
 - C interop: double-only, no autodiff, interpreter (`run`) cannot execute externs
 - GPU PTX backend: experimental, elementwise `f64` only, demo host stub
 - Stdlib: limited to a few math functions `f64`; no BLAS/FFT
@@ -583,8 +683,11 @@ Syntax highlighting is available for `.noma` files. See the [`noma-vscode`](./no
 
 ### Planned
 
-- 🔲 Batch processing & File I/O (CSV/Safetensors)
-- 🔲 Model serialization
+- 🔲 Multi-file projects & module system
+- 🔲 Debugging support (breakpoints, source maps)
+- 🔲 Additional data types (int, bool, string as first-class)
+- 🔲 BLAS/LAPACK integration
+- 🔲 Extended GPU support (more operations, optimization)
 
 ---
 

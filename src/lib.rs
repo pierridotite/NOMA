@@ -16,7 +16,7 @@ pub use token::{Token, TokenType};
 pub use error::NomaError;
 pub use ast::{Expression, Statement, Program, BinaryOperator, UnaryOperator, Item, FunctionDef};
 pub use parser::Parser;
-pub use graph::{ComputationalGraph, NodeId, NodeType, Tensor, Value, FunctionRegistry, UserFunction, OptimizerType, OptimizerConfig, OptimizerState};
+pub use graph::{ComputationalGraph, NodeId, NodeType, Tensor, Value, FunctionRegistry, UserFunction, OptimizerType, OptimizerConfig, OptimizerState, load_csv_file, save_csv_file, load_safetensors_file, save_safetensors_file};
 pub use llvm_codegen::LLVMCodegen;
 pub use ptx_codegen::PTXCodegen;
 pub use nvptx_host::run_elementwise_kernel;

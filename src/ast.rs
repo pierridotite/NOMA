@@ -5,6 +5,8 @@ use std::fmt;
 pub enum Expression {
     /// Numeric literal (e.g., 5.0, 42)
     Number(f64),
+    /// String literal (e.g., "hello.csv")
+    StringLiteral(String),
     /// Tensor literal with flat data and shape (row-major)
     TensorLiteral {
         data: Vec<f64>,
@@ -119,6 +121,35 @@ pub enum Statement {
         name: String,
         shape: Vec<Expression>,
     },
+    /// Load tensor from CSV file: let data = load_csv("path.csv");
+    LoadCsv {
+        name: String,
+        path: String,
+    },
+    /// Save tensor to CSV file: save_csv(tensor, "path.csv");
+    SaveCsv {
+        tensor: Expression,
+        path: String,
+    },
+    /// Load tensors from Safetensors file: let model = load_safetensors("model.safetensors");
+    LoadSafetensors {
+        name: String,
+        path: String,
+    },
+    /// Save tensors to Safetensors file: save_safetensors(tensors, "model.safetensors");
+    SaveSafetensors {
+        tensors: Vec<(String, Expression)>,
+        path: String,
+    },
+    /// Batch loop: batch item, index in data with batch_size { body }
+    /// Iterates over data in batches
+    BatchLoop {
+        item_name: String,
+        index_name: Option<String>,
+        data: Expression,
+        batch_size: Expression,
+        body: Vec<Statement>,
+    },
 }
 
 /// Function definition
@@ -167,6 +198,7 @@ impl fmt::Display for Expression {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Expression::Number(n) => write!(f, "{}", n),
+            Expression::StringLiteral(s) => write!(f, "\"{}\"", s),
             Expression::TensorLiteral { data, shape } => {
                 write!(f, "tensor[shape={:?}, data={:?}]", shape, data)
             }

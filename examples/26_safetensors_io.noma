@@ -1,0 +1,21 @@
+// Example: Safetensors File I/O in NOMA
+// Demonstrates saving and loading model weights using Safetensors format
+
+fn main() {
+    // Create some model weights
+    learn W1 = tensor [[0.1, 0.2], [0.3, 0.4], [0.5, 0.6]];
+    learn W2 = tensor [[0.7, 0.8, 0.9], [1.0, 1.1, 1.2]];
+    let bias = tensor [0.01, 0.02, 0.03];
+    
+    // Save model weights to Safetensors format
+    save_safetensors { W1: W1, W2: W2, bias: bias }, "examples/data/model.safetensors";
+    
+    // Later: Load the weights back
+    load_safetensors loaded_model = "examples/data/model.safetensors";
+    
+    // Use the loaded weights
+    let result = sum(loaded_model);
+    print(result);
+    
+    return result;
+}

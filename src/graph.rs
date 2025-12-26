@@ -529,6 +529,11 @@ impl ComputationalGraph {
     ) -> Result<NodeId, String> {
         match expr {
             Expression::Number(n) => Ok(self.add_constant(*n)),
+            Expression::StringLiteral(_) => {
+                // String literals are handled at the statement level (file paths)
+                // They can't be used as numeric expressions
+                Err("String literals cannot be used in numeric expressions".to_string())
+            }
             Expression::TensorLiteral { data, shape } => {
                 self.add_constant_tensor(data.clone(), shape.clone())
             }
@@ -739,6 +744,115 @@ impl ComputationalGraph {
                     let node_id = self.realloc_heap_tensor(name, dims)?;
                     variables.insert(name.clone(), node_id);
                     last_node = Some(node_id);
+                }
+                Statement::LoadCsv { name, path } => {
+                    // Load CSV file and create tensor
+                    let tensor_data = load_csv_file(path)?;
+                    let node_id = self.add_constant_tensor(tensor_data.0, tensor_data.1)?;
+                    variables.insert(name.clone(), node_id);
+                    last_node = Some(node_id);
+                }
+                Statement::SaveCsv { tensor, path } => {
+                    // Evaluate tensor and save to CSV
+                    let tensor_id = self.build_from_expression_with_functions(tensor, variables, functions)?;
+                    self.forward_pass()?;
+                    let tensor_val = self.get_node(tensor_id)
+                        .and_then(|n| n.value.clone())
+                        .ok_or_else(|| "Cannot evaluate tensor for save_csv".to_string())?;
+                    save_csv_file(&tensor_val, path)?;
+                    last_node = Some(tensor_id);
+                }
+                Statement::LoadSafetensors { name, path } => {
+                    // Load Safetensors file and create a dictionary-like structure
+                    let tensors = load_safetensors_file(path)?;
+                    // For simplicity, if there's only one tensor, use it directly
+                    // Otherwise, we store the first tensor (full support would need dict type)
+                    if let Some((_, (data, shape))) = tensors.into_iter().next() {
+                        let node_id = self.add_constant_tensor(data, shape)?;
+                        variables.insert(name.clone(), node_id);
+                        last_node = Some(node_id);
+                    } else {
+                        return Err(format!("No tensors found in safetensors file: {}", path));
+                    }
+                }
+                Statement::SaveSafetensors { tensors, path } => {
+                    // Evaluate all tensors and save to Safetensors format
+                    let mut tensor_map = Vec::new();
+                    for (tensor_name, tensor_expr) in tensors {
+                        let tensor_id = self.build_from_expression_with_functions(tensor_expr, variables, functions)?;
+                        self.forward_pass()?;
+                        let tensor_val = self.get_node(tensor_id)
+                            .and_then(|n| n.value.clone())
+                            .ok_or_else(|| format!("Cannot evaluate tensor '{}' for save_safetensors", tensor_name))?;
+                        tensor_map.push((tensor_name.clone(), tensor_val));
+                    }
+                    save_safetensors_file(&tensor_map, path)?;
+                    // save_safetensors doesn't produce a value
+                }
+                Statement::BatchLoop { item_name, index_name, data, batch_size, body } => {
+                    // Evaluate data tensor and batch size
+                    let data_id = self.build_from_expression_with_functions(data, variables, functions)?;
+                    self.forward_pass()?;
+                    let data_val = self.get_node(data_id)
+                        .and_then(|n| n.value.clone())
+                        .ok_or_else(|| "Cannot evaluate data for batch loop".to_string())?;
+                    
+                    let batch_size_id = self.build_from_expression_with_functions(batch_size, variables, functions)?;
+                    self.forward_pass()?;
+                    let batch_size_val = self.get_node(batch_size_id)
+                        .and_then(|n| n.value.clone())
+                        .and_then(|v| v.as_scalar())
+                        .ok_or_else(|| "Batch size must be a scalar".to_string())? as usize;
+                    
+                    if batch_size_val == 0 {
+                        return Err("Batch size cannot be zero".to_string());
+                    }
+                    
+                    // Get tensor data
+                    let (tensor_data, tensor_shape) = match &data_val {
+                        Value::Tensor(t) => (t.data.clone(), t.shape.clone()),
+                        Value::Scalar(s) => (vec![*s], vec![1]),
+                    };
+                    
+                    let num_samples = if tensor_shape.is_empty() { 1 } else { tensor_shape[0] };
+                    let num_batches = (num_samples + batch_size_val - 1) / batch_size_val;
+                    
+                    // Iterate over batches
+                    for batch_idx in 0..num_batches {
+                        let start = batch_idx * batch_size_val;
+                        let end = (start + batch_size_val).min(num_samples);
+                        
+                        // Extract batch data
+                        let batch_data = if tensor_shape.len() == 1 {
+                            tensor_data[start..end].to_vec()
+                        } else {
+                            // For multi-dimensional tensors, slice along first dimension
+                            let row_size: usize = tensor_shape[1..].iter().product();
+                            tensor_data[start * row_size..end * row_size].to_vec()
+                        };
+                        
+                        let batch_shape = if tensor_shape.len() == 1 {
+                            vec![end - start]
+                        } else {
+                            let mut shape = vec![end - start];
+                            shape.extend(&tensor_shape[1..]);
+                            shape
+                        };
+                        
+                        // Create batch tensor node
+                        let batch_node_id = self.add_constant_tensor(batch_data, batch_shape)?;
+                        variables.insert(item_name.clone(), batch_node_id);
+                        
+                        // Optionally set index variable
+                        if let Some(idx_name) = index_name {
+                            let idx_node_id = self.add_constant(batch_idx as f64);
+                            variables.insert(idx_name.clone(), idx_node_id);
+                        }
+                        
+                        // Execute batch body
+                        let result = self.inline_function_body(body, variables, functions)?;
+                        last_node = Some(result);
+                    }
                 }
             }
         }
@@ -2220,6 +2334,359 @@ fn matmul_tensors(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
 
 fn matmul_tensors_raw(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
     matmul_tensors(a, b)
+}
+
+// ============================================================================
+// File I/O Helper Functions
+// ============================================================================
+
+/// Load a CSV file and return tensor data and shape
+/// Expects a numeric CSV (all values are f64)
+pub fn load_csv_file(path: &str) -> Result<(Vec<f64>, Vec<usize>), String> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+    
+    let file = File::open(path).map_err(|e| format!("Cannot open CSV file '{}': {}", path, e))?;
+    let reader = BufReader::new(file);
+    
+    let mut data = Vec::new();
+    let mut num_cols: Option<usize> = None;
+    let mut num_rows = 0;
+    
+    for (line_num, line_result) in reader.lines().enumerate() {
+        let line = line_result.map_err(|e| format!("Error reading line {}: {}", line_num + 1, e))?;
+        let line = line.trim();
+        
+        // Skip empty lines and comments
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        
+        let values: Result<Vec<f64>, _> = line
+            .split(',')
+            .map(|s| s.trim().parse::<f64>())
+            .collect();
+        
+        let row_values = values.map_err(|e| format!("Error parsing line {}: {}", line_num + 1, e))?;
+        
+        // Validate column count consistency
+        match num_cols {
+            None => num_cols = Some(row_values.len()),
+            Some(expected) if expected != row_values.len() => {
+                return Err(format!(
+                    "Inconsistent column count at line {}: expected {}, got {}",
+                    line_num + 1, expected, row_values.len()
+                ));
+            }
+            _ => {}
+        }
+        
+        data.extend(row_values);
+        num_rows += 1;
+    }
+    
+    if num_rows == 0 {
+        return Err(format!("CSV file '{}' is empty or contains no data", path));
+    }
+    
+    let cols = num_cols.unwrap_or(1);
+    let shape = if cols == 1 {
+        vec![num_rows]  // 1D tensor for single column
+    } else {
+        vec![num_rows, cols]  // 2D tensor for multiple columns
+    };
+    
+    Ok((data, shape))
+}
+
+/// Save a tensor value to a CSV file
+pub fn save_csv_file(value: &Value, path: &str) -> Result<(), String> {
+    use std::fs::File;
+    use std::io::Write;
+    
+    let mut file = File::create(path).map_err(|e| format!("Cannot create CSV file '{}': {}", path, e))?;
+    
+    match value {
+        Value::Scalar(s) => {
+            writeln!(file, "{}", s).map_err(|e| format!("Error writing to CSV: {}", e))?;
+        }
+        Value::Tensor(t) => {
+            if t.shape.len() == 1 {
+                // 1D tensor: write each element on a new line
+                for val in &t.data {
+                    writeln!(file, "{}", val).map_err(|e| format!("Error writing to CSV: {}", e))?;
+                }
+            } else if t.shape.len() == 2 {
+                // 2D tensor: write each row as a CSV line
+                let cols = t.shape[1];
+                for row in t.data.chunks(cols) {
+                    let line: Vec<String> = row.iter().map(|v| v.to_string()).collect();
+                    writeln!(file, "{}", line.join(",")).map_err(|e| format!("Error writing to CSV: {}", e))?;
+                }
+            } else {
+                // Higher dimensional: flatten to 2D (first dim x rest)
+                let first_dim = t.shape[0];
+                let rest: usize = t.shape[1..].iter().product();
+                for row in 0..first_dim {
+                    let start = row * rest;
+                    let end = start + rest;
+                    let line: Vec<String> = t.data[start..end].iter().map(|v| v.to_string()).collect();
+                    writeln!(file, "{}", line.join(",")).map_err(|e| format!("Error writing to CSV: {}", e))?;
+                }
+            }
+        }
+    }
+    
+    Ok(())
+}
+
+/// Load tensors from a Safetensors file
+/// Returns a map of tensor names to (data, shape)
+pub fn load_safetensors_file(path: &str) -> Result<Vec<(String, (Vec<f64>, Vec<usize>))>, String> {
+    use std::fs::File;
+    use std::io::Read;
+    
+    let mut file = File::open(path).map_err(|e| format!("Cannot open safetensors file '{}': {}", path, e))?;
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer).map_err(|e| format!("Error reading safetensors file: {}", e))?;
+    
+    // Parse safetensors format
+    // The format is: 8 bytes header size (little endian u64), then JSON header, then binary data
+    if buffer.len() < 8 {
+        return Err("Invalid safetensors file: too short".to_string());
+    }
+    
+    let header_size = u64::from_le_bytes([
+        buffer[0], buffer[1], buffer[2], buffer[3],
+        buffer[4], buffer[5], buffer[6], buffer[7],
+    ]) as usize;
+    
+    if buffer.len() < 8 + header_size {
+        return Err("Invalid safetensors file: header size mismatch".to_string());
+    }
+    
+    let header_json = std::str::from_utf8(&buffer[8..8 + header_size])
+        .map_err(|e| format!("Invalid UTF-8 in safetensors header: {}", e))?;
+    
+    // Parse header JSON manually (simplified parser for safetensors format)
+    let tensors = parse_safetensors_header(header_json, &buffer[8 + header_size..])?;
+    
+    Ok(tensors)
+}
+
+/// Parse safetensors header JSON and extract tensor data
+fn parse_safetensors_header(header: &str, data: &[u8]) -> Result<Vec<(String, (Vec<f64>, Vec<usize>))>, String> {
+    // Simple JSON parsing for safetensors format
+    // Expected format: { "tensor_name": { "dtype": "F64", "shape": [dim1, dim2], "data_offsets": [start, end] }, ... }
+    
+    let header = header.trim();
+    if !header.starts_with('{') || !header.ends_with('}') {
+        return Err("Invalid safetensors header: not a JSON object".to_string());
+    }
+    
+    let mut result = Vec::new();
+    
+    // Use serde_json if available, otherwise use simple parsing
+    #[cfg(feature = "serde_json")]
+    {
+        use serde_json::Value as JsonValue;
+        let parsed: serde_json::Map<String, JsonValue> = serde_json::from_str(header)
+            .map_err(|e| format!("Error parsing safetensors header: {}", e))?;
+        
+        for (name, tensor_info) in parsed {
+            if name == "__metadata__" { continue; }
+            
+            let obj = tensor_info.as_object()
+                .ok_or_else(|| format!("Invalid tensor info for '{}'", name))?;
+            
+            let dtype = obj.get("dtype")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| format!("Missing dtype for tensor '{}'", name))?;
+            
+            let shape: Vec<usize> = obj.get("shape")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| format!("Missing shape for tensor '{}'", name))?
+                .iter()
+                .filter_map(|v| v.as_u64().map(|n| n as usize))
+                .collect();
+            
+            let offsets: Vec<usize> = obj.get("data_offsets")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| format!("Missing data_offsets for tensor '{}'", name))?
+                .iter()
+                .filter_map(|v| v.as_u64().map(|n| n as usize))
+                .collect();
+            
+            if offsets.len() != 2 {
+                return Err(format!("Invalid data_offsets for tensor '{}'", name));
+            }
+            
+            let tensor_data = extract_tensor_data(dtype, &data[offsets[0]..offsets[1]], &shape)?;
+            result.push((name, (tensor_data, shape)));
+        }
+    }
+    
+    #[cfg(not(feature = "serde_json"))]
+    {
+        // Simplified parsing without serde_json
+        // This handles basic safetensors files
+        let content = &header[1..header.len()-1]; // Remove { }
+        
+        for part in content.split("},") {
+            let part = part.trim();
+            if part.is_empty() { continue; }
+            
+            // Find tensor name
+            let name_end = part.find(':').ok_or("Invalid header format")?;
+            let name = part[..name_end].trim().trim_matches('"').to_string();
+            
+            if name == "__metadata__" { continue; }
+            
+            let info = &part[name_end + 1..];
+            let info = info.trim_start_matches('{').trim_end_matches('}').trim();
+            
+            // Parse dtype
+            let dtype = extract_json_string(info, "dtype").unwrap_or("F64".to_string());
+            
+            // Parse shape
+            let shape = extract_json_array(info, "shape")?;
+            
+            // Parse data_offsets
+            let offsets = extract_json_array(info, "data_offsets")?;
+            
+            if offsets.len() != 2 {
+                return Err(format!("Invalid data_offsets for tensor '{}'", name));
+            }
+            
+            let tensor_data = extract_tensor_data(&dtype, &data[offsets[0]..offsets[1]], &shape)?;
+            result.push((name, (tensor_data, shape)));
+        }
+    }
+    
+    Ok(result)
+}
+
+/// Extract JSON string value
+fn extract_json_string(json: &str, key: &str) -> Option<String> {
+    let key_pattern = format!("\"{}\"", key);
+    let start = json.find(&key_pattern)?;
+    let after_key = &json[start + key_pattern.len()..];
+    let colon_pos = after_key.find(':')?;
+    let value_start = &after_key[colon_pos + 1..].trim_start();
+    
+    if value_start.starts_with('"') {
+        let end = value_start[1..].find('"')?;
+        Some(value_start[1..1+end].to_string())
+    } else {
+        None
+    }
+}
+
+/// Extract JSON array of numbers
+fn extract_json_array(json: &str, key: &str) -> Result<Vec<usize>, String> {
+    let key_pattern = format!("\"{}\"", key);
+    let start = json.find(&key_pattern)
+        .ok_or_else(|| format!("Missing key '{}' in JSON", key))?;
+    let after_key = &json[start + key_pattern.len()..];
+    let bracket_start = after_key.find('[')
+        .ok_or_else(|| format!("Expected '[' after key '{}'", key))?;
+    let bracket_end = after_key.find(']')
+        .ok_or_else(|| format!("Expected ']' for key '{}'", key))?;
+    
+    let array_content = &after_key[bracket_start + 1..bracket_end];
+    
+    array_content
+        .split(',')
+        .map(|s| s.trim().parse::<usize>().map_err(|e| format!("Invalid number: {}", e)))
+        .collect()
+}
+
+/// Extract tensor data from binary buffer
+fn extract_tensor_data(dtype: &str, data: &[u8], shape: &[usize]) -> Result<Vec<f64>, String> {
+    let total_elements: usize = shape.iter().product();
+    
+    match dtype {
+        "F64" => {
+            if data.len() != total_elements * 8 {
+                return Err(format!("Data size mismatch for F64: expected {}, got {}", total_elements * 8, data.len()));
+            }
+            let mut result = Vec::with_capacity(total_elements);
+            for chunk in data.chunks(8) {
+                let bytes: [u8; 8] = chunk.try_into().map_err(|_| "Invalid F64 data")?;
+                result.push(f64::from_le_bytes(bytes));
+            }
+            Ok(result)
+        }
+        "F32" => {
+            if data.len() != total_elements * 4 {
+                return Err(format!("Data size mismatch for F32: expected {}, got {}", total_elements * 4, data.len()));
+            }
+            let mut result = Vec::with_capacity(total_elements);
+            for chunk in data.chunks(4) {
+                let bytes: [u8; 4] = chunk.try_into().map_err(|_| "Invalid F32 data")?;
+                result.push(f32::from_le_bytes(bytes) as f64);
+            }
+            Ok(result)
+        }
+        "F16" | "BF16" => {
+            // For F16/BF16, we'd need proper half-float conversion
+            // For now, return an error suggesting F32/F64
+            Err(format!("Dtype '{}' not fully supported. Please convert to F32 or F64.", dtype))
+        }
+        _ => Err(format!("Unsupported dtype: {}", dtype)),
+    }
+}
+
+/// Save tensors to a Safetensors file
+pub fn save_safetensors_file(tensors: &[(String, Value)], path: &str) -> Result<(), String> {
+    use std::fs::File;
+    use std::io::Write;
+    
+    // Build header and data
+    let mut header_parts = Vec::new();
+    let mut tensor_data = Vec::new();
+    
+    for (name, value) in tensors {
+        let (data, shape) = match value {
+            Value::Scalar(s) => (vec![*s], vec![1usize]),
+            Value::Tensor(t) => (t.data.clone(), t.shape.clone()),
+        };
+        
+        let start_offset = tensor_data.len();
+        
+        // Convert to F64 bytes (little endian)
+        for val in &data {
+            tensor_data.extend_from_slice(&val.to_le_bytes());
+        }
+        
+        let end_offset = tensor_data.len();
+        
+        let shape_str: Vec<String> = shape.iter().map(|s| s.to_string()).collect();
+        header_parts.push(format!(
+            "\"{}\":{{\"dtype\":\"F64\",\"shape\":[{}],\"data_offsets\":[{},{}]}}",
+            name,
+            shape_str.join(","),
+            start_offset,
+            end_offset
+        ));
+    }
+    
+    let header_json = format!("{{{}}}", header_parts.join(","));
+    let header_bytes = header_json.as_bytes();
+    let header_size = header_bytes.len() as u64;
+    
+    let mut file = File::create(path).map_err(|e| format!("Cannot create safetensors file '{}': {}", path, e))?;
+    
+    // Write header size (8 bytes, little endian)
+    file.write_all(&header_size.to_le_bytes()).map_err(|e| format!("Error writing safetensors: {}", e))?;
+    
+    // Write header JSON
+    file.write_all(header_bytes).map_err(|e| format!("Error writing safetensors: {}", e))?;
+    
+    // Write tensor data
+    file.write_all(&tensor_data).map_err(|e| format!("Error writing safetensors: {}", e))?;
+    
+    Ok(())
 }
 
 #[cfg(test)]

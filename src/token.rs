@@ -22,8 +22,21 @@ pub enum TokenType {
     Free,        // free
     Realloc,     // realloc
     
+    // File I/O
+    LoadCsv,     // load_csv
+    SaveCsv,     // save_csv
+    LoadSafetensors,  // load_safetensors
+    SaveSafetensors,  // save_safetensors
+    
+    // Batch processing
+    Batch,       // batch
+    In,          // in
+    
     // Types
     Tensor,      // tensor
+    
+    // String Literals
+    StringLiteral(String),
     
     // Identifiers and Literals
     Identifier(String),
@@ -100,9 +113,16 @@ impl fmt::Display for TokenType {
             TokenType::Alloc => write!(f, "alloc"),
             TokenType::Free => write!(f, "free"),
             TokenType::Realloc => write!(f, "realloc"),
+            TokenType::LoadCsv => write!(f, "load_csv"),
+            TokenType::SaveCsv => write!(f, "save_csv"),
+            TokenType::LoadSafetensors => write!(f, "load_safetensors"),
+            TokenType::SaveSafetensors => write!(f, "save_safetensors"),
+            TokenType::Batch => write!(f, "batch"),
+            TokenType::In => write!(f, "in"),
             TokenType::Tensor => write!(f, "tensor"),
             TokenType::Identifier(name) => write!(f, "identifier({})", name),
             TokenType::Number(n) => write!(f, "number({})", n),
+            TokenType::StringLiteral(s) => write!(f, "string(\"{}\")", s),
             _ => write!(f, "{:?}", self),
         }
     }

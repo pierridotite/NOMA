@@ -140,6 +140,10 @@ impl Lexer {
                 }
             }
             '^' => TokenType::Power,
+            '"' => {
+                let string = self.read_string()?;
+                TokenType::StringLiteral(string)
+            }
             _ if ch.is_alphabetic() || ch == '_' => {
                 let identifier = self.read_identifier(ch);
                 self.keyword_or_identifier(identifier)
@@ -198,6 +202,48 @@ impl Lexer {
         })
     }
 
+    fn read_string(&mut self) -> Result<String, NomaError> {
+        let start_line = self.line;
+        let start_column = self.column - 1;
+        let mut string = String::new();
+
+        while !self.is_at_end() && self.peek() != '"' {
+            let ch = self.advance();
+            if ch == '\\' && !self.is_at_end() {
+                // Handle escape sequences
+                let escaped = self.advance();
+                match escaped {
+                    'n' => string.push('\n'),
+                    't' => string.push('\t'),
+                    'r' => string.push('\r'),
+                    '\\' => string.push('\\'),
+                    '"' => string.push('"'),
+                    _ => {
+                        string.push('\\');
+                        string.push(escaped);
+                    }
+                }
+            } else if ch == '\n' {
+                self.line += 1;
+                self.column = 1;
+                string.push(ch);
+            } else {
+                string.push(ch);
+            }
+        }
+
+        if self.is_at_end() {
+            return Err(NomaError::ParseError {
+                message: "Unterminated string literal".to_string(),
+                line: start_line,
+                column: start_column,
+            });
+        }
+
+        self.advance(); // consume closing quote
+        Ok(string)
+    }
+
     fn keyword_or_identifier(&self, word: String) -> TokenType {
         match word.as_str() {
             "learn" => TokenType::Learn,
@@ -218,6 +264,12 @@ impl Lexer {
             "alloc" => TokenType::Alloc,
             "free" => TokenType::Free,
             "realloc" => TokenType::Realloc,
+            "load_csv" => TokenType::LoadCsv,
+            "save_csv" => TokenType::SaveCsv,
+            "load_safetensors" => TokenType::LoadSafetensors,
+            "save_safetensors" => TokenType::SaveSafetensors,
+            "batch" => TokenType::Batch,
+            "in" => TokenType::In,
             _ => TokenType::Identifier(word),
         }
     }

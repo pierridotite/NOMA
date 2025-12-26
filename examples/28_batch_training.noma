@@ -1,0 +1,57 @@
+// Example: Mini-batch Training in NOMA
+// Full training loop with batch processing and CSV data loading
+
+fn mse_loss(pred, target) {
+    let error = pred - target;
+    return mean(error * error);
+}
+
+fn main() {
+    // Create synthetic training data (20 samples, 2 features)
+    let X = tensor [
+        [1.0, 1.0], [1.0, 2.0], [2.0, 1.0], [3.0, 2.0],
+        [2.0, 3.0], [3.0, 1.0], [4.0, 2.0], [5.0, 3.0],
+        [6.0, 2.0], [7.0, 3.0], [8.0, 4.0], [9.0, 5.0],
+        [10.0, 6.0], [2.5, 1.5], [3.5, 2.5], [4.5, 3.5],
+        [5.5, 3.5], [6.5, 4.5], [7.5, 5.5], [8.5, 6.5]
+    ];
+    
+    // Targets: Y = 1.5*X1 + 2.0*X2
+    let T = tensor [
+        [3.5], [5.5], [5.0], [8.5],
+        [9.0], [6.5], [10.0], [13.5],
+        [13.0], [16.5], [20.0], [23.5],
+        [27.0], [6.75], [10.25], [13.75],
+        [15.25], [18.75], [22.25], [25.75]
+    ];
+    
+    // Initialize weights
+    learn W = tensor [[0.5], [0.5]];
+    
+    let learning_rate = 0.01;
+    let max_iterations = 1000;
+    let batch_size = 5.0;
+    
+    // Training with batch processing
+    optimize(W) until loss < 0.01 {
+        // Process all batches
+        batch x_batch in X with batch_size {
+            let pred = matmul(x_batch, W);
+        }
+        
+        // Compute overall loss
+        let Y = matmul(X, W);
+        let E = Y - T;
+        let loss = mean(E * E);
+        minimize loss;
+    }
+    
+    // Print final weights (should be close to [1.5, 2.0])
+    print(W);
+    print(loss);
+    
+    // Save trained model
+    save_safetensors { weights: W }, "examples/data/trained_model.safetensors";
+    
+    return W;
+}
