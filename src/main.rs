@@ -1073,7 +1073,7 @@ fn build_executable(file: PathBuf, output: PathBuf, opt_level: Option<u8>, fast_
         match cmd.status() {
             Ok(s) if s.success() => {
                 println!("[info] Linked executable with {}", linker);
-                println!("✅ Built standalone executable: {}", output.display());
+                println!("Built standalone executable: {}", output.display());
                 link_success = true;
                 break;
             }
