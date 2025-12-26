@@ -1,10 +1,134 @@
 use clap::{Parser, Subcommand};
-use noma_compiler::{Lexer, Parser as NomaParser, ComputationalGraph, LLVMCodegen, PTXCodegen};
+use noma_compiler::{Lexer, Parser as NomaParser, ComputationalGraph, LLVMCodegen, PTXCodegen, FunctionRegistry};
 use std::fs;
 use std::path::PathBuf;
 use std::collections::HashMap;
 use std::process::Command;
 use std::env;
+
+/// Helper function to collect user-defined functions from AST into a registry
+fn collect_functions(ast: &noma_compiler::Program) -> (FunctionRegistry, Option<noma_compiler::FunctionDef>) {
+    let mut func_registry = FunctionRegistry::new();
+    let mut main_func = None;
+
+    for item in &ast.items {
+        if let noma_compiler::Item::Function(func) = item {
+            if func.name == "main" {
+                main_func = Some(func.clone());
+            } else {
+                // Register non-main functions for inlining
+                func_registry.register(func.name.clone(), func.params.clone(), func.body.clone());
+            }
+        }
+    }
+
+    // If no main, use the first function as main
+    let main_func = main_func.or_else(|| {
+        ast.items.iter().find_map(|item| {
+            if let noma_compiler::Item::Function(f) = item { Some(f.clone()) } else { None }
+        })
+    });
+
+    (func_registry, main_func)
+}
+
+/// Shared function to lower statements into the computational graph with user function support
+fn lower_statements_shared(
+    graph: &mut ComputationalGraph,
+    variables: &mut HashMap<String, noma_compiler::NodeId>,
+    stmts: &[noma_compiler::Statement],
+    last_node: &mut Option<noma_compiler::NodeId>,
+    func_registry: &FunctionRegistry,
+) -> Result<(), String> {
+    for stmt in stmts {
+        match stmt {
+            noma_compiler::Statement::LearnDeclaration { name, value } => {
+                match value {
+                    noma_compiler::Expression::Number(n) => {
+                        let node_id = graph.add_learnable(name.clone(), *n);
+                        variables.insert(name.clone(), node_id);
+                        *last_node = Some(node_id);
+                    }
+                    noma_compiler::Expression::TensorLiteral { data, shape } => {
+                        let node_id = graph.add_learnable_tensor(name.clone(), data.clone(), shape.clone())
+                            .map_err(|e| e.to_string())?;
+                        variables.insert(name.clone(), node_id);
+                        *last_node = Some(node_id);
+                    }
+                    _ => {
+                        let node_id = graph.add_learnable(name.clone(), 0.0);
+                        variables.insert(name.clone(), node_id);
+                        *last_node = Some(node_id);
+                    }
+                }
+            }
+            noma_compiler::Statement::LetDeclaration { name, value } => {
+                let val_id = graph.build_from_expression_with_functions(value, variables, func_registry)?;
+                variables.insert(name.clone(), val_id);
+                *last_node = Some(val_id);
+            }
+            noma_compiler::Statement::Assignment { name, value } => {
+                let val_id = graph.build_from_expression_with_functions(value, variables, func_registry)?;
+                variables.insert(name.clone(), val_id);
+                *last_node = Some(val_id);
+            }
+            noma_compiler::Statement::Minimize(expr) => {
+                let id = graph.build_from_expression_with_functions(expr, variables, func_registry)?;
+                *last_node = Some(id);
+            }
+            noma_compiler::Statement::Expression(expr) => {
+                let id = graph.build_from_expression_with_functions(expr, variables, func_registry)?;
+                *last_node = Some(id);
+            }
+            noma_compiler::Statement::Return(opt_expr) => {
+                if let Some(expr) = opt_expr {
+                    let id = graph.build_from_expression_with_functions(expr, variables, func_registry)?;
+                    *last_node = Some(id);
+                }
+            }
+            noma_compiler::Statement::Block(inner) => {
+                lower_statements_shared(graph, variables, inner, last_node, func_registry)?;
+            }
+            noma_compiler::Statement::If { condition, then_branch, else_branch } => {
+                let cond_id = graph.build_from_expression_with_functions(condition, variables, func_registry)?;
+                let _ = graph.forward_pass();
+                let cond_val = graph.get_node(cond_id)
+                    .and_then(|n| n.value.clone())
+                    .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
+                    .unwrap_or(0.0);
+                if cond_val != 0.0 {
+                    lower_statements_shared(graph, variables, then_branch, last_node, func_registry)?;
+                } else {
+                    lower_statements_shared(graph, variables, else_branch, last_node, func_registry)?;
+                }
+            }
+            noma_compiler::Statement::While { condition, body } => {
+                for _ in 0..1_000_000usize {
+                    let cond_id = graph.build_from_expression_with_functions(condition, variables, func_registry)?;
+                    let _ = graph.forward_pass();
+                    let cond_val = graph.get_node(cond_id)
+                        .and_then(|n| n.value.clone())
+                        .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
+                        .unwrap_or(0.0);
+                    if cond_val == 0.0 { break; }
+                    lower_statements_shared(graph, variables, body, last_node, func_registry)?;
+                }
+            }
+            noma_compiler::Statement::OptimizeLoop { target, condition, body, .. } => {
+                // Lower body first so condition can reference values like `loss`
+                let mut loop_last: Option<noma_compiler::NodeId> = None;
+                lower_statements_shared(graph, variables, body, &mut loop_last, func_registry)?;
+                let objective = loop_last.or(*last_node).ok_or_else(|| "Optimize loop body produced no expressions".to_string())?;
+                let cond_id = graph.build_from_expression_with_functions(condition, variables, func_registry)?;
+
+                let (lr, iters) = pick_hyperparams(graph, variables, 0.1, 1000);
+                run_optimize_loop(graph, variables, cond_id, objective, target, lr, iters)?;
+                *last_node = Some(objective);
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Parser)]
 #[command(name = "noma")]
@@ -416,126 +540,16 @@ fn compile_to_llvm(file: PathBuf, output: Option<PathBuf>, optimize: bool, opt_l
     let mut parser = NomaParser::new(tokens);
     let ast = parser.parse().map_err(|e| anyhow::anyhow!("{:?}", e))?;
 
+    // Collect user-defined functions
+    let (func_registry, main_func) = collect_functions(&ast);
+    let func = main_func.ok_or_else(|| anyhow::anyhow!("No function found to compile"))?;
+
     // Lower the first function (main) to a computational graph
     let mut graph = ComputationalGraph::new();
     let mut variables: HashMap<String, noma_compiler::NodeId> = HashMap::new();
     let mut last_node: Option<noma_compiler::NodeId> = None;
 
-    // Find a function to compile (prefers main)
-    let maybe_func = ast.items.iter().find_map(|item| {
-        if let noma_compiler::Item::Function(func) = item {
-            if func.name == "main" { return Some(func); }
-        }
-        None
-    }).or_else(|| ast.items.iter().find_map(|item| {
-        if let noma_compiler::Item::Function(func) = item { Some(func) } else { None }
-    }));
-
-    let func = maybe_func.ok_or_else(|| anyhow::anyhow!("No function found to compile"))?;
-
-    fn lower_statements(
-        graph: &mut ComputationalGraph,
-        variables: &mut HashMap<String, noma_compiler::NodeId>,
-        stmts: &[noma_compiler::Statement],
-        last_node: &mut Option<noma_compiler::NodeId>,
-    ) -> Result<(), String> {
-        for stmt in stmts {
-            match stmt {
-                noma_compiler::Statement::LearnDeclaration { name, value } => {
-                    match value {
-                        noma_compiler::Expression::Number(n) => {
-                            let node_id = graph.add_learnable(name.clone(), *n);
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                        noma_compiler::Expression::TensorLiteral { data, shape } => {
-                            let node_id = graph.add_learnable_tensor(name.clone(), data.clone(), shape.clone())
-                                .map_err(|e| e.to_string())?;
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                        _ => {
-                            // Non-literal init: evaluate expression into node, but for learnable we need an initial value.
-                            // Fallback: create scalar learnable with 0.0
-                            let node_id = graph.add_learnable(name.clone(), 0.0);
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                    }
-                }
-                noma_compiler::Statement::LetDeclaration { name, value } => {
-                    let val_id = graph.build_from_expression(value, variables)?;
-                    variables.insert(name.clone(), val_id);
-                    *last_node = Some(val_id);
-                }
-                noma_compiler::Statement::Assignment { name, value } => {
-                    let val_id = graph.build_from_expression(value, variables)?;
-                    variables.insert(name.clone(), val_id);
-                    *last_node = Some(val_id);
-                }
-                noma_compiler::Statement::Minimize(expr) => {
-                    let id = graph.build_from_expression(expr, variables)?;
-                    *last_node = Some(id);
-                }
-                noma_compiler::Statement::Expression(expr) => {
-                    let id = graph.build_from_expression(expr, variables)?;
-                    *last_node = Some(id);
-                }
-                noma_compiler::Statement::Return(opt_expr) => {
-                    if let Some(expr) = opt_expr {
-                        let id = graph.build_from_expression(expr, variables)?;
-                        *last_node = Some(id);
-                    }
-                }
-                noma_compiler::Statement::Block(inner) => {
-                    lower_statements(graph, variables, inner, last_node)?;
-                }
-                noma_compiler::Statement::If { condition, then_branch, else_branch } => {
-                    // Evaluate condition and lower only the taken branch
-                    let cond_id = graph.build_from_expression(condition, variables)?;
-                    let _ = graph.forward_pass();
-                    let cond_val = graph.get_node(cond_id)
-                        .and_then(|n| n.value.clone())
-                        .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
-                        .unwrap_or(0.0);
-                    if cond_val != 0.0 {
-                        lower_statements(graph, variables, then_branch, last_node)?;
-                    } else {
-                        lower_statements(graph, variables, else_branch, last_node)?;
-                    }
-                }
-                noma_compiler::Statement::While { condition, body } => {
-                    // Imperative while executed at compile-time lowering; guards to avoid infinite loops.
-                    for _ in 0..1_000_000usize {
-                        let cond_id = graph.build_from_expression(condition, variables)?;
-                        let _ = graph.forward_pass();
-                        let cond_val = graph.get_node(cond_id)
-                            .and_then(|n| n.value.clone())
-                            .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
-                            .unwrap_or(0.0);
-                        if cond_val == 0.0 { break; }
-                        lower_statements(graph, variables, body, last_node)?;
-                    }
-                }
-                noma_compiler::Statement::OptimizeLoop { target, condition, body, .. } => {
-                    // Lower body first so condition can reference values like `loss`
-                    let mut loop_last: Option<noma_compiler::NodeId> = None;
-                    lower_statements(graph, variables, body, &mut loop_last)?;
-                    let objective = loop_last.or(*last_node).ok_or_else(|| "Optimize loop body produced no expressions".to_string())?;
-
-                    let cond_id = graph.build_from_expression(condition, variables)?;
-
-                    // Hyperparameters can be provided in-source
-                    let (lr, iters) = pick_hyperparams(graph, variables, 0.1, 1000);
-                    run_optimize_loop(graph, variables, cond_id, objective, target, lr, iters)?;
-                    *last_node = Some(objective);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    lower_statements(&mut graph, &mut variables, &func.body, &mut last_node)
+    lower_statements_shared(&mut graph, &mut variables, &func.body, &mut last_node, &func_registry)
         .map_err(|e| anyhow::anyhow!(e))?;
 
     // Ensure we have something to return
@@ -665,119 +679,16 @@ fn run_noma(file: PathBuf) -> anyhow::Result<()> {
     let mut parser = NomaParser::new(tokens);
     let ast = parser.parse().map_err(|e| anyhow::anyhow!("{:?}", e))?;
 
+    // Collect all user-defined functions into a registry
+    let (func_registry, main_func) = collect_functions(&ast);
+    let func = main_func.ok_or_else(|| anyhow::anyhow!("No function found to run"))?;
+
     // Lower first function to graph
     let mut graph = ComputationalGraph::new();
     let mut variables: HashMap<String, noma_compiler::NodeId> = HashMap::new();
     let mut last_node: Option<noma_compiler::NodeId> = None;
 
-    let maybe_func = ast.items.iter().find_map(|item| {
-        if let noma_compiler::Item::Function(func) = item {
-            if func.name == "main" { return Some(func); }
-        }
-        None
-    }).or_else(|| ast.items.iter().find_map(|item| {
-        if let noma_compiler::Item::Function(func) = item { Some(func) } else { None }
-    }));
-
-    let func = maybe_func.ok_or_else(|| anyhow::anyhow!("No function found to run"))?;
-
-    fn lower_statements(
-        graph: &mut ComputationalGraph,
-        variables: &mut HashMap<String, noma_compiler::NodeId>,
-        stmts: &[noma_compiler::Statement],
-        last_node: &mut Option<noma_compiler::NodeId>,
-    ) -> Result<(), String> {
-        for stmt in stmts {
-            match stmt {
-                noma_compiler::Statement::LearnDeclaration { name, value } => {
-                    match value {
-                        noma_compiler::Expression::Number(n) => {
-                            let node_id = graph.add_learnable(name.clone(), *n);
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                        noma_compiler::Expression::TensorLiteral { data, shape } => {
-                            let node_id = graph.add_learnable_tensor(name.clone(), data.clone(), shape.clone())
-                                .map_err(|e| e.to_string())?;
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                        _ => {
-                            let node_id = graph.add_learnable(name.clone(), 0.0);
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                    }
-                }
-                noma_compiler::Statement::LetDeclaration { name, value } => {
-                    let val_id = graph.build_from_expression(value, variables)?;
-                    variables.insert(name.clone(), val_id);
-                    *last_node = Some(val_id);
-                }
-                noma_compiler::Statement::Assignment { name, value } => {
-                    let val_id = graph.build_from_expression(value, variables)?;
-                    variables.insert(name.clone(), val_id);
-                    *last_node = Some(val_id);
-                }
-                noma_compiler::Statement::Minimize(expr) => {
-                    let id = graph.build_from_expression(expr, variables)?;
-                    *last_node = Some(id);
-                }
-                noma_compiler::Statement::Expression(expr) => {
-                    let id = graph.build_from_expression(expr, variables)?;
-                    *last_node = Some(id);
-                }
-                noma_compiler::Statement::Return(opt_expr) => {
-                    if let Some(expr) = opt_expr {
-                        let id = graph.build_from_expression(expr, variables)?;
-                        *last_node = Some(id);
-                    }
-                }
-                noma_compiler::Statement::Block(inner) => {
-                    lower_statements(graph, variables, inner, last_node)?;
-                }
-                noma_compiler::Statement::If { condition, then_branch, else_branch } => {
-                    let cond_id = graph.build_from_expression(condition, variables)?;
-                    let _ = graph.forward_pass();
-                    let cond_val = graph.get_node(cond_id)
-                        .and_then(|n| n.value.clone())
-                        .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
-                        .unwrap_or(0.0);
-                    if cond_val != 0.0 {
-                        lower_statements(graph, variables, then_branch, last_node)?;
-                    } else {
-                        lower_statements(graph, variables, else_branch, last_node)?;
-                    }
-                }
-                noma_compiler::Statement::While { condition, body } => {
-                    for _ in 0..1_000_000usize {
-                        let cond_id = graph.build_from_expression(condition, variables)?;
-                        let _ = graph.forward_pass();
-                        let cond_val = graph.get_node(cond_id)
-                            .and_then(|n| n.value.clone())
-                            .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
-                            .unwrap_or(0.0);
-                        if cond_val == 0.0 { break; }
-                        lower_statements(graph, variables, body, last_node)?;
-                    }
-                }
-                noma_compiler::Statement::OptimizeLoop { target, condition, body, .. } => {
-                    // Lower body then build condition to allow referencing loss
-                    let mut loop_last: Option<noma_compiler::NodeId> = None;
-                    lower_statements(graph, variables, body, &mut loop_last)?;
-                    let objective = loop_last.or(*last_node).ok_or_else(|| "Optimize loop body produced no expressions".to_string())?;
-                    let cond_id = graph.build_from_expression(condition, variables)?;
-
-                    let (lr, iters) = pick_hyperparams(graph, variables, 0.1, 1000);
-                    run_optimize_loop(graph, variables, cond_id, objective, target, lr, iters)?;
-                    *last_node = Some(objective);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    lower_statements(&mut graph, &mut variables, &func.body, &mut last_node)
+    lower_statements_shared(&mut graph, &mut variables, &func.body, &mut last_node, &func_registry)
         .map_err(|e| anyhow::anyhow!(e))?;
 
     graph.forward_pass().map_err(|e| anyhow::anyhow!(e))?;
@@ -790,6 +701,7 @@ fn run_noma(file: PathBuf) -> anyhow::Result<()> {
 
     Ok(())
 }
+
 fn compile_to_ptx(file: PathBuf, output: Option<PathBuf>, n_elems: Option<u32>, host_stub: bool, optimize: bool, fast_math: bool) -> anyhow::Result<()> {
     // Read source file
     let source = fs::read_to_string(&file)?;
@@ -801,121 +713,16 @@ fn compile_to_ptx(file: PathBuf, output: Option<PathBuf>, n_elems: Option<u32>, 
     let mut parser = NomaParser::new(tokens);
     let ast = parser.parse().map_err(|e| anyhow::anyhow!("{:?}", e))?;
 
-    // Lower first function to graph (reuse compile_to_llvm lowering helper)
+    // Collect user-defined functions
+    let (func_registry, main_func) = collect_functions(&ast);
+    let func = main_func.ok_or_else(|| anyhow::anyhow!("No function found to compile"))?;
+
+    // Lower first function to graph
     let mut graph = ComputationalGraph::new();
     let mut variables: HashMap<String, noma_compiler::NodeId> = HashMap::new();
     let mut last_node: Option<noma_compiler::NodeId> = None;
 
-    let maybe_func = ast.items.iter().find_map(|item| {
-        if let noma_compiler::Item::Function(func) = item {
-            if func.name == "main" { return Some(func); }
-        }
-        None
-    }).or_else(|| ast.items.iter().find_map(|item| {
-        if let noma_compiler::Item::Function(func) = item { Some(func) } else { None }
-    }));
-
-    let func = maybe_func.ok_or_else(|| anyhow::anyhow!("No function found to compile"))?;
-
-    fn lower_statements(
-        graph: &mut ComputationalGraph,
-        variables: &mut HashMap<String, noma_compiler::NodeId>,
-        stmts: &[noma_compiler::Statement],
-        last_node: &mut Option<noma_compiler::NodeId>,
-    ) -> Result<(), String> {
-        for stmt in stmts {
-            match stmt {
-                noma_compiler::Statement::LearnDeclaration { name, value } => {
-                    match value {
-                        noma_compiler::Expression::Number(n) => {
-                            let node_id = graph.add_learnable(name.clone(), *n);
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                        noma_compiler::Expression::TensorLiteral { data, shape } => {
-                            let node_id = graph.add_learnable_tensor(name.clone(), data.clone(), shape.clone())
-                                .map_err(|e| e.to_string())?;
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                        _ => {
-                            let node_id = graph.add_learnable(name.clone(), 0.0);
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                    }
-                }
-                noma_compiler::Statement::LetDeclaration { name, value } => {
-                    let val_id = graph.build_from_expression(value, variables)?;
-                    variables.insert(name.clone(), val_id);
-                    *last_node = Some(val_id);
-                }
-                noma_compiler::Statement::Assignment { name, value } => {
-                    let val_id = graph.build_from_expression(value, variables)?;
-                    variables.insert(name.clone(), val_id);
-                    *last_node = Some(val_id);
-                }
-                noma_compiler::Statement::Minimize(expr) => {
-                    let id = graph.build_from_expression(expr, variables)?;
-                    *last_node = Some(id);
-                }
-                noma_compiler::Statement::Expression(expr) => {
-                    let id = graph.build_from_expression(expr, variables)?;
-                    *last_node = Some(id);
-                }
-                noma_compiler::Statement::Return(opt_expr) => {
-                    if let Some(expr) = opt_expr {
-                        let id = graph.build_from_expression(expr, variables)?;
-                        *last_node = Some(id);
-                    }
-                }
-                noma_compiler::Statement::Block(inner) => {
-                    lower_statements(graph, variables, inner, last_node)?;
-                }
-                noma_compiler::Statement::If { condition, then_branch, else_branch } => {
-                    let cond_id = graph.build_from_expression(condition, variables)?;
-                    let _ = graph.forward_pass();
-                    let cond_val = graph.get_node(cond_id)
-                        .and_then(|n| n.value.clone())
-                        .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
-                        .unwrap_or(0.0);
-                    if cond_val != 0.0 {
-                        lower_statements(graph, variables, then_branch, last_node)?;
-                    } else {
-                        lower_statements(graph, variables, else_branch, last_node)?;
-                    }
-                }
-                noma_compiler::Statement::While { condition, body } => {
-                    for _ in 0..1_000_000usize {
-                        let cond_id = graph.build_from_expression(condition, variables)?;
-                        let _ = graph.forward_pass();
-                        let cond_val = graph.get_node(cond_id)
-                            .and_then(|n| n.value.clone())
-                            .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
-                            .unwrap_or(0.0);
-                        if cond_val == 0.0 { break; }
-                        lower_statements(graph, variables, body, last_node)?;
-                    }
-                }
-                noma_compiler::Statement::OptimizeLoop { target, condition, body, .. } => {
-                    // Lower body first so condition can use variables like `loss`
-                    let mut loop_last: Option<noma_compiler::NodeId> = None;
-                    lower_statements(graph, variables, body, &mut loop_last)?;
-                    let objective = loop_last.or(*last_node).ok_or_else(|| "Optimize loop body produced no expressions".to_string())?;
-
-                    let cond_id = graph.build_from_expression(condition, variables)?;
-
-                    // Hyperparameters can be provided in-source
-                    let (lr, iters) = pick_hyperparams(graph, variables, 0.1, 1000);
-                    run_optimize_loop(graph, variables, cond_id, objective, target, lr, iters)?;
-                    *last_node = Some(objective);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    lower_statements(&mut graph, &mut variables, &func.body, &mut last_node)
+    lower_statements_shared(&mut graph, &mut variables, &func.body, &mut last_node, &func_registry)
         .map_err(|e| anyhow::anyhow!(e))?;
 
     let mut codegen = PTXCodegen::new();
@@ -956,7 +763,6 @@ fn compile_to_ptx(file: PathBuf, output: Option<PathBuf>, n_elems: Option<u32>, 
 
     Ok(())
 }
-// Add before the final closing brace of main.rs
 
 fn build_executable(file: PathBuf, output: PathBuf, opt_level: Option<u8>, fast_math: bool, link_libs: Vec<String>, link_paths: Vec<String>) -> anyhow::Result<()> {
     println!("Building executable: {} -> {}", file.display(), output.display());
@@ -971,139 +777,16 @@ fn build_executable(file: PathBuf, output: PathBuf, opt_level: Option<u8>, fast_
     let mut parser = NomaParser::new(tokens);
     let ast = parser.parse().map_err(|e| anyhow::anyhow!("{:?}", e))?;
 
+    // Collect user-defined functions
+    let (func_registry, main_func) = collect_functions(&ast);
+    let func = main_func.ok_or_else(|| anyhow::anyhow!("No function found to compile"))?;
+
     // Lower the first function to a computational graph
     let mut graph = ComputationalGraph::new();
     let mut variables: HashMap<String, noma_compiler::NodeId> = HashMap::new();
     let mut last_node: Option<noma_compiler::NodeId> = None;
 
-    let maybe_func = ast.items.iter().find_map(|item| {
-        if let noma_compiler::Item::Function(func) = item {
-            if func.name == "main" { return Some(func); }
-        }
-        None
-    }).or_else(|| ast.items.iter().find_map(|item| {
-        if let noma_compiler::Item::Function(func) = item { Some(func) } else { None }
-    }));
-
-    let func = maybe_func.ok_or_else(|| anyhow::anyhow!("No function found to compile"))?;
-
-    fn lower_statements(
-        graph: &mut ComputationalGraph,
-        variables: &mut HashMap<String, noma_compiler::NodeId>,
-        stmts: &[noma_compiler::Statement],
-        last_node: &mut Option<noma_compiler::NodeId>,
-    ) -> Result<(), String> {
-        for stmt in stmts {
-            match stmt {
-                noma_compiler::Statement::LearnDeclaration { name, value } => {
-                    match value {
-                        noma_compiler::Expression::Number(n) => {
-                            let node_id = graph.add_learnable(name.clone(), *n);
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                        noma_compiler::Expression::TensorLiteral { data, shape } => {
-                            let node_id = graph.add_learnable_tensor(name.clone(), data.clone(), shape.clone())
-                                .map_err(|e| e.to_string())?;
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                        _ => {
-                            let node_id = graph.add_learnable(name.clone(), 0.0);
-                            variables.insert(name.clone(), node_id);
-                            *last_node = Some(node_id);
-                        }
-                    }
-                }
-                noma_compiler::Statement::LetDeclaration { name, value } => {
-                    let val_id = graph.build_from_expression(value, variables)?;
-                    variables.insert(name.clone(), val_id);
-                    *last_node = Some(val_id);
-                }
-                noma_compiler::Statement::Assignment { name, value } => {
-                    let val_id = graph.build_from_expression(value, variables)?;
-                    variables.insert(name.clone(), val_id);
-                    *last_node = Some(val_id);
-                }
-                noma_compiler::Statement::Minimize(expr) => {
-                    let id = graph.build_from_expression(expr, variables)?;
-                    *last_node = Some(id);
-                }
-                noma_compiler::Statement::Expression(expr) => {
-                    let id = graph.build_from_expression(expr, variables)?;
-                    *last_node = Some(id);
-                }
-                noma_compiler::Statement::Return(opt_expr) => {
-                    if let Some(expr) = opt_expr {
-                        let id = graph.build_from_expression(expr, variables)?;
-                        *last_node = Some(id);
-                    }
-                }
-                noma_compiler::Statement::Block(inner) => {
-                    lower_statements(graph, variables, inner, last_node)?;
-                }
-                noma_compiler::Statement::If { condition, then_branch, else_branch } => {
-                    let cond_id = graph.build_from_expression(condition, variables)?;
-                    let _ = graph.forward_pass();
-                    let cond_val = graph.get_node(cond_id)
-                        .and_then(|n| n.value.clone())
-                        .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
-                        .unwrap_or(0.0);
-                    if cond_val != 0.0 {
-                        lower_statements(graph, variables, then_branch, last_node)?;
-                    } else {
-                        lower_statements(graph, variables, else_branch, last_node)?;
-                    }
-                }
-                noma_compiler::Statement::While { condition, body } => {
-                    for _ in 0..1_000_000usize {
-                        let cond_id = graph.build_from_expression(condition, variables)?;
-                        let _ = graph.forward_pass();
-                        let cond_val = graph.get_node(cond_id)
-                            .and_then(|n| n.value.clone())
-                            .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
-                            .unwrap_or(0.0);
-                        if cond_val == 0.0 { break; }
-                        lower_statements(graph, variables, body, last_node)?;
-                    }
-                }
-                noma_compiler::Statement::OptimizeLoop { target, condition, body, .. } => {
-                    // Lower the body first - this creates the nodes
-                    lower_statements(graph, variables, body, last_node)?;
-                    
-                    // The last node after lowering body should be the loss (from minimize statement)
-                    let objective_id = last_node.ok_or("No objective in optimize loop")?;
-                    
-                    // Build condition expression ONCE (using variables that now exist)
-                    let cond_id = graph.build_from_expression(condition, variables)?;
-                    
-                    // Run optimization at compile-time, allowing in-source overrides
-                    let (lr, max_iter) = pick_hyperparams(graph, variables, 0.001, 100000);
-                    for _ in 0..max_iter {
-                        graph.forward_pass()?;
-                        let cond_val = graph.get_node(cond_id)
-                            .and_then(|n| n.value.clone())
-                            .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
-                            .unwrap_or(0.0);
-                        if cond_val != 0.0 {
-                            break;
-                        }
-                        graph.backward_pass(objective_id)?;
-                        graph.optimize_step(lr)?;
-                        graph.reset_gradients();
-                    }
-                    
-                    // After optimization, set last_node to target variable's value
-                    if let Some(&target_id) = variables.get(target) {
-                        *last_node = Some(target_id);
-                    }
-                }
-            }
-        }
-        Ok(())
-    }
-
-    lower_statements(&mut graph, &mut variables, &func.body, &mut last_node)
+    lower_statements_shared(&mut graph, &mut variables, &func.body, &mut last_node, &func_registry)
         .map_err(|e| anyhow::anyhow!(e))?;
 
     // Perform forward pass (values are already computed after optimization)

@@ -1,0 +1,37 @@
+// Example 16: User Functions for Optimization
+// Demonstrates user-defined functions in an optimization context
+
+// Function to compute Mean Squared Error
+fn mse(pred, target) {
+    let error = pred - target;
+    return error * error;
+}
+
+// Polynomial function for curve fitting
+fn polynomial(a, b, c, x) {
+    return a * x * x + b * x + c;
+}
+
+fn main() {
+    // We want to find w such that polynomial(2, 3, w, 2) = 15
+    // polynomial(2, 3, c, 2) = 2*4 + 3*2 + c = 8 + 6 + c = 14 + c
+    // So c should be 1.0
+    
+    learn w = 0.0;
+    
+    let target = 15.0;
+    let x = 2.0;
+    
+    let learning_rate = 0.1;
+    let max_iterations = 1000;
+    
+    optimize(w) until loss < 0.0001 {
+        let pred = polynomial(2.0, 3.0, w, x);
+        let loss = mse(pred, target);
+        minimize loss;
+    }
+    
+    // After optimization, w ≈ 1.0
+    let final_pred = polynomial(2.0, 3.0, w, x);
+    return final_pred;
+}

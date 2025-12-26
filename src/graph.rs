@@ -1,8 +1,42 @@
 use std::collections::HashMap;
-use crate::ast::{BinaryOperator, Expression, UnaryOperator};
+use crate::ast::{BinaryOperator, Expression, Statement, UnaryOperator};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NodeId(usize);
+
+/// Represents a user-defined function for inlining
+#[derive(Debug, Clone)]
+pub struct UserFunction {
+    pub name: String,
+    pub params: Vec<String>,
+    pub body: Vec<Statement>,
+}
+
+/// Registry of user-defined functions
+#[derive(Debug, Clone, Default)]
+pub struct FunctionRegistry {
+    functions: HashMap<String, UserFunction>,
+}
+
+impl FunctionRegistry {
+    pub fn new() -> Self {
+        FunctionRegistry {
+            functions: HashMap::new(),
+        }
+    }
+
+    pub fn register(&mut self, name: String, params: Vec<String>, body: Vec<Statement>) {
+        self.functions.insert(name.clone(), UserFunction { name, params, body });
+    }
+
+    pub fn get(&self, name: &str) -> Option<&UserFunction> {
+        self.functions.get(name)
+    }
+
+    pub fn contains(&self, name: &str) -> bool {
+        self.functions.contains_key(name)
+    }
+}
 
 impl NodeId {
     pub fn new(id: usize) -> Self {
@@ -279,6 +313,16 @@ impl ComputationalGraph {
     }
 
     pub fn build_from_expression(&mut self, expr: &Expression, variables: &HashMap<String, NodeId>) -> Result<NodeId, String> {
+        self.build_from_expression_with_functions(expr, variables, &FunctionRegistry::new())
+    }
+
+    /// Build expression with support for user-defined function inlining
+    pub fn build_from_expression_with_functions(
+        &mut self,
+        expr: &Expression,
+        variables: &HashMap<String, NodeId>,
+        functions: &FunctionRegistry,
+    ) -> Result<NodeId, String> {
         match expr {
             Expression::Number(n) => Ok(self.add_constant(*n)),
             Expression::TensorLiteral { data, shape } => {
@@ -287,16 +331,16 @@ impl ComputationalGraph {
             Expression::Identifier(name) => variables.get(name).copied().ok_or_else(|| format!("Undefined variable: {}", name)),
             Expression::Index { target, indices } => {
                 // Lower as a function call: index(target, i, j, ...)
-                let t_id = self.build_from_expression(target, variables)?;
+                let t_id = self.build_from_expression_with_functions(target, variables, functions)?;
                 let mut args = vec![t_id];
                 for idx in indices {
-                    args.push(self.build_from_expression(idx, variables)?);
+                    args.push(self.build_from_expression_with_functions(idx, variables, functions)?);
                 }
                 Ok(self.add_function_call("index".to_string(), args))
             }
             Expression::BinaryOp { left, op, right } => {
-                let left_id = self.build_from_expression(left, variables)?;
-                let right_id = self.build_from_expression(right, variables)?;
+                let left_id = self.build_from_expression_with_functions(left, variables, functions)?;
+                let right_id = self.build_from_expression_with_functions(right, variables, functions)?;
 
                 let op_str = match op {
                     BinaryOperator::Add => "add",
@@ -318,7 +362,7 @@ impl ComputationalGraph {
                 Ok(self.add_binary_op(op_str, left_id, right_id))
             }
             Expression::UnaryOp { op, expr } => {
-                let expr_id = self.build_from_expression(expr, variables)?;
+                let expr_id = self.build_from_expression_with_functions(expr, variables, functions)?;
                 let op_str = match op {
                     UnaryOperator::Neg => "neg",
                     UnaryOperator::Not => "not",
@@ -326,13 +370,139 @@ impl ComputationalGraph {
                 Ok(self.add_unary_op(op_str, expr_id))
             }
             Expression::Call { name, args } => {
-                let mut arg_ids = Vec::new();
-                for arg in args {
-                    arg_ids.push(self.build_from_expression(arg, variables)?);
+                // Check if this is a user-defined function
+                if let Some(user_fn) = functions.get(name) {
+                    // Inline the user function
+                    if args.len() != user_fn.params.len() {
+                        return Err(format!(
+                            "Function '{}' expects {} arguments, got {}",
+                            name, user_fn.params.len(), args.len()
+                        ));
+                    }
+
+                    // Evaluate arguments and bind to parameters
+                    let mut local_vars = variables.clone();
+                    for (param, arg_expr) in user_fn.params.iter().zip(args.iter()) {
+                        let arg_id = self.build_from_expression_with_functions(arg_expr, variables, functions)?;
+                        local_vars.insert(param.clone(), arg_id);
+                    }
+
+                    // Execute function body and get return value
+                    let body = user_fn.body.clone();
+                    let result = self.inline_function_body(&body, &mut local_vars, functions)?;
+                    Ok(result)
+                } else {
+                    // Built-in function or external call
+                    let mut arg_ids = Vec::new();
+                    for arg in args {
+                        arg_ids.push(self.build_from_expression_with_functions(arg, variables, functions)?);
+                    }
+                    Ok(self.add_function_call(name.clone(), arg_ids))
                 }
-                Ok(self.add_function_call(name.clone(), arg_ids))
             }
         }
+    }
+
+    /// Inline a function body and return the result node
+    fn inline_function_body(
+        &mut self,
+        body: &[Statement],
+        variables: &mut HashMap<String, NodeId>,
+        functions: &FunctionRegistry,
+    ) -> Result<NodeId, String> {
+        let mut last_node: Option<NodeId> = None;
+
+        for stmt in body {
+            match stmt {
+                Statement::LetDeclaration { name, value } => {
+                    let val_id = self.build_from_expression_with_functions(value, variables, functions)?;
+                    variables.insert(name.clone(), val_id);
+                    last_node = Some(val_id);
+                }
+                Statement::LearnDeclaration { name, value } => {
+                    // In function context, learn declarations become let declarations
+                    match value {
+                        Expression::Number(n) => {
+                            let node_id = self.add_learnable(name.clone(), *n);
+                            variables.insert(name.clone(), node_id);
+                            last_node = Some(node_id);
+                        }
+                        Expression::TensorLiteral { data, shape } => {
+                            let node_id = self.add_learnable_tensor(name.clone(), data.clone(), shape.clone())?;
+                            variables.insert(name.clone(), node_id);
+                            last_node = Some(node_id);
+                        }
+                        _ => {
+                            let val_id = self.build_from_expression_with_functions(value, variables, functions)?;
+                            variables.insert(name.clone(), val_id);
+                            last_node = Some(val_id);
+                        }
+                    }
+                }
+                Statement::Assignment { name, value } => {
+                    let val_id = self.build_from_expression_with_functions(value, variables, functions)?;
+                    variables.insert(name.clone(), val_id);
+                    last_node = Some(val_id);
+                }
+                Statement::Return(Some(expr)) => {
+                    let id = self.build_from_expression_with_functions(expr, variables, functions)?;
+                    return Ok(id);
+                }
+                Statement::Return(None) => {
+                    // Return last computed value
+                    if let Some(id) = last_node {
+                        return Ok(id);
+                    }
+                    return Err("Function has empty return".to_string());
+                }
+                Statement::Expression(expr) => {
+                    let id = self.build_from_expression_with_functions(expr, variables, functions)?;
+                    last_node = Some(id);
+                }
+                Statement::Block(inner) => {
+                    let result = self.inline_function_body(inner, variables, functions)?;
+                    last_node = Some(result);
+                }
+                Statement::If { condition, then_branch, else_branch } => {
+                    // For now, evaluate condition at lowering time
+                    let cond_id = self.build_from_expression_with_functions(condition, variables, functions)?;
+                    self.forward_pass()?;
+                    let cond_val = self.get_node(cond_id)
+                        .and_then(|n| n.value.clone())
+                        .and_then(|v| match v { Value::Scalar(s) => Some(s), _ => None })
+                        .unwrap_or(0.0);
+                    if cond_val != 0.0 {
+                        let result = self.inline_function_body(then_branch, variables, functions)?;
+                        last_node = Some(result);
+                    } else if !else_branch.is_empty() {
+                        let result = self.inline_function_body(else_branch, variables, functions)?;
+                        last_node = Some(result);
+                    }
+                }
+                Statement::While { condition, body: loop_body } => {
+                    for _ in 0..1_000_000usize {
+                        let cond_id = self.build_from_expression_with_functions(condition, variables, functions)?;
+                        self.forward_pass()?;
+                        let cond_val = self.get_node(cond_id)
+                            .and_then(|n| n.value.clone())
+                            .and_then(|v| match v { Value::Scalar(s) => Some(s), _ => None })
+                            .unwrap_or(0.0);
+                        if cond_val == 0.0 { break; }
+                        let result = self.inline_function_body(loop_body, variables, functions)?;
+                        last_node = Some(result);
+                    }
+                }
+                Statement::Minimize(expr) => {
+                    let id = self.build_from_expression_with_functions(expr, variables, functions)?;
+                    last_node = Some(id);
+                }
+                Statement::OptimizeLoop { .. } => {
+                    return Err("OptimizeLoop not supported inside user functions".to_string());
+                }
+            }
+        }
+
+        last_node.ok_or_else(|| "Function body produced no value".to_string())
     }
 
     pub fn get_node(&self, id: NodeId) -> Option<&Node> {

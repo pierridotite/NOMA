@@ -106,6 +106,56 @@ optimize(w) until loss < 0.001 {
 }
 ```
 
+### User-Defined Functions
+
+Define and call your own functions for code reuse and modularity:
+
+```noma
+// Define a function with parameters
+fn square(x) {
+    return x * x;
+}
+
+// Functions can call other functions and built-ins
+fn mse(pred, target) {
+    let error = pred - target;
+    return error * error;
+}
+
+// Functions can have multiple parameters
+fn polynomial(a, b, c, x) {
+    return a * square(x) + b * x + c;
+}
+
+fn main() {
+    let result = square(5.0);          // Returns 25.0
+    let loss = mse(10.0, 8.0);         // Returns 4.0
+    let y = polynomial(2.0, 3.0, 1.0, 2.0);  // Returns 15.0
+    return y;
+}
+```
+
+User functions work with optimization and autodiff:
+
+```noma
+fn loss_fn(pred, target) {
+    let err = pred - target;
+    return err * err;
+}
+
+fn main() {
+    learn w = 0.0;
+    let target = 5.0;
+    
+    optimize(w) until loss < 0.0001 {
+        let loss = loss_fn(w, target);
+        minimize loss;
+    }
+    
+    return w;  // Converges to 5.0
+}
+```
+
 ### Built-in Functions
 
 ```noma
@@ -188,6 +238,13 @@ let data = tensor [[-0.5], [1.0], [-2.5]];   // Negative literals supported
 | `12_linear_regression.noma` | Simple regression | ML pipeline |
 | `13_broadcast.noma` | Broadcasting | Bias addition |
 | `14_synth_regression.noma` | 20-sample regression | Full training loop |
+
+### User-Defined Functions
+
+| Example | Description | Concept |
+|---------|-------------|---------|
+| `15_user_functions.noma` | Function definitions | Defining and calling functions |
+| `16_user_functions_optim.noma` | Functions with optimization | Autodiff through user functions |
 
 ### Linear Regression Example
 
@@ -389,30 +446,32 @@ Syntax highlighting is available for `.noma` files. See the [`noma-vscode`](./no
 - ✅ Experimental C interop (extern double-only calls; no autodiff)
 - ✅ Core math stdlib (sin, cos, tanh, exp, log, sqrt, abs, floor, ceil; f64; autodiff except floor/ceil)
 - ✅ Control flow (if/else, while; executed at compile-time lowering)
+- ✅ User-defined functions (inlined at compile-time, full autodiff support)
 
 ### Known limitations (current gaps)
 
-- **No user-defined functions**: all code lives in `fn main()`; you cannot define or call your own functions
 - Only SGD optimizer (no Adam/RMSprop)
 - No batching, dataset IO, or model serialization
 - C interop: double-only, no autodiff, interpreter (`run`) cannot execute externs
 - GPU PTX backend: experimental, elementwise `f64` only, demo host stub
 - Stdlib: limited to a few math functions `f64`; no RNG/BLAS/FFT
-- Control flow is evaluated at lowering: non-taken branches are not compiled; `while` expands the graph
+- Control flow is evaluated at lowering: non-taken branches are not compiled; `while` expands the graph (unrolling)
 - No autodiff through `floor`/`ceil` or external calls
 - **Single data type**: only `f64`; no integers, strings, or booleans as first-class types
-- **No nested tensors** or dynamic shapes; tensor dimensions must be known at compile-time
+- **Static Tensor Shapes**: Dimensions must be known at compile-time (current workaround for dynamic topology: use the "Capacity Reserve" pattern with masks)
 - **Struct definitions** are parsed but have no runtime semantics yet
 - **No error recovery** in parser; first syntax error aborts compilation
 - **No module/import system**: everything must be in a single file
 - **No debugging support** (no breakpoints, no source maps)
 - **Comparison ops** (`==`, `<`, etc.) return `0.0`/`1.0` scalars, not true booleans
+- **No recursion**: user functions are inlined; recursive calls will cause infinite loop at compile-time
 
 ### Planned
 
-- 🔲 User-defined functions
+- 🔲 **True Dynamic Topology**: Native `alloc`/`free` keywords for heap-based network growth
+- 🔲 **Standard Library**: Random Number Generation (RNG) for weight initialization
 - 🔲 Adam/RMSprop optimizers
-- 🔲 Batch processing
+- 🔲 Batch processing & File I/O (CSV/Safetensors)
 - 🔲 Model serialization
 
 ---

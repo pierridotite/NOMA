@@ -1,0 +1,51 @@
+// Example 15: User-Defined Functions
+// Demonstrates how to define and call your own functions in NOMA
+
+// Simple function that squares a number
+fn square(x) {
+    return x * x;
+}
+
+// Function to compute the distance squared between two points
+fn distance_squared(x1, y1, x2, y2) {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    return dx * dx + dy * dy;
+}
+
+// Function composition: a quadratic function f(x) = ax^2 + bx + c
+fn quadratic(a, b, c, x) {
+    return a * square(x) + b * x + c;
+}
+
+// Activation function wrapper
+fn my_activation(x) {
+    return sigmoid(x);
+}
+
+// Main function demonstrating all features
+fn main() {
+    // Test square function
+    let x = 5.0;
+    let x_squared = square(x);
+    print(x_squared);  // Should print 25.0
+
+    // Test distance_squared
+    let d = distance_squared(0.0, 0.0, 3.0, 4.0);
+    print(d);  // Should print 25.0 (3^2 + 4^2)
+
+    // Test quadratic: f(x) = 2x^2 + 3x + 1, with x = 2
+    // Expected: 2*4 + 3*2 + 1 = 8 + 6 + 1 = 15
+    let q = quadratic(2.0, 3.0, 1.0, 2.0);
+    print(q);  // Should print 15.0
+
+    // Test function calling built-in
+    let act = my_activation(0.0);
+    print(act);  // Should print 0.5 (sigmoid(0) = 0.5)
+
+    // Nested function calls
+    let nested = square(square(2.0));  // (2^2)^2 = 16
+    print(nested);  // Should print 16.0
+
+    return nested;
+}
