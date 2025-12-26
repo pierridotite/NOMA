@@ -240,7 +240,15 @@ impl Parser {
     /// Parse optimize loop: optimize <target> until <condition> { body }
     fn parse_optimize_loop(&mut self) -> Result<Statement, NomaError> {
         self.consume(TokenType::Optimize, "Expected 'optimize'")?;
-        let target = self.parse_identifier("Expected target to optimize")?;
+        // Support both: optimize target until ... AND optimize(target) until ...
+        let target = if matches!(self.peek().token_type, TokenType::LParen) {
+            self.advance(); // consume '('
+            let t = self.parse_identifier("Expected target to optimize")?;
+            self.consume(TokenType::RParen, "Expected ')'")?;
+            t
+        } else {
+            self.parse_identifier("Expected target to optimize")?
+        };
         self.consume(TokenType::Until, "Expected 'until'")?;
         let condition = self.parse_expression()?;
         self.consume(TokenType::LBrace, "Expected '{'")?;

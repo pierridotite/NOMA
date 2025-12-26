@@ -1,0 +1,25 @@
+// Example 7: Rosenbrock Function (HARD)
+// f(x,y) = (1-x)^2 + 100*(y - x^2)^2
+// Minimum at (1, 1) - notoriously difficult to optimize
+// The minimum lies in a narrow curved valley
+
+fn main() {
+    learn x = 0.0;
+    learn y = 0.0;
+    let one = 1.0;
+    let hundred = 100.0;
+    
+    optimize(x) until loss < 0.0001 {
+        let a = one - x;
+        let b = y - x * x;
+        let loss = a * a + hundred * b * b;
+        minimize loss;
+    }
+    
+    return x;
+}
+
+// WARNING: May not converge with default learning rate (0.01)
+// Rosenbrock is a classic test for optimization algorithms
+// Real optimizers use adaptive learning rates (Adam, etc.)
+// Expected: x -> 1.0 (but likely won't reach it)

@@ -1,0 +1,34 @@
+// Example 6: Neural Network Forward Pass
+// Simulates a 2-layer perceptron: sigmoid(w2 * sigmoid(w1 * x + b1) + b2)
+// Learn weights to output 0.9 for input x = 1.0
+
+fn main() {
+    learn w1 = 0.5;
+    learn b1 = 0.1;
+    learn w2 = 0.5;
+    learn b2 = 0.1;
+    
+    let x = 1.0;
+    let target = 0.9;
+    
+    optimize(w1) until loss < 0.0001 {
+        let z1 = w1 * x + b1;
+        let h = sigmoid(z1);
+        let z2 = w2 * h + b2;
+        let output = sigmoid(z2);
+        let err = output - target;
+        let loss = err * err;
+        minimize loss;
+    }
+    
+    // Return the learned output
+    let z1 = w1 * x + b1;
+    let h = sigmoid(z1);
+    let z2 = w2 * h + b2;
+    let output = sigmoid(z2);
+    return output;
+}
+
+// This optimizes 4 parameters (w1, b1, w2, b2) simultaneously
+// to make the network output 0.9 for input 1.0
+// Expected output: ~0.9

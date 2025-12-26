@@ -28,8 +28,17 @@ impl LLVMCodegen {
         var
     }
 
+    /// Generate LLVM IR for a computational graph, returning the value of a specific node
+    pub fn generate_with_return(&mut self, graph: &ComputationalGraph, return_node: Option<NodeId>) -> Result<String, String> {
+        self.generate_internal(graph, return_node)
+    }
+
     /// Generate LLVM IR for a computational graph
     pub fn generate(&mut self, graph: &ComputationalGraph) -> Result<String, String> {
+        self.generate_internal(graph, None)
+    }
+    
+    fn generate_internal(&mut self, graph: &ComputationalGraph, return_node: Option<NodeId>) -> Result<String, String> {
         let mut ir = String::new();
 
         // LLVM module header
@@ -57,9 +66,22 @@ impl LLVMCodegen {
         // Process nodes in deterministic order
         for node_id in node_ids {
             let node = &nodes[&node_id];
-            let var = self.fresh_var();
-            var_map.insert(node_id, var.clone());
-            last_var = Some(var.clone());
+            
+            // For operations that create temporaries, we'll allocate var later
+            let needs_deferred_var = match &node.node_type {
+                NodeType::BinaryOp(op) => matches!(op.as_str(), "eq" | "ne" | "lt" | "gt" | "le" | "ge" | "and" | "or"),
+                NodeType::FunctionCall(f) => f == "sigmoid",
+                _ => false,
+            };
+            
+            let var = if needs_deferred_var {
+                String::new() // Placeholder, will be set later
+            } else {
+                let v = self.fresh_var();
+                var_map.insert(node_id, v.clone());
+                last_var = Some(v.clone());
+                v
+            };
 
             match &node.node_type {
                 NodeType::Constant(Value::Scalar(val)) => {
@@ -115,7 +137,6 @@ impl LLVMCodegen {
                             ));
                         }
                         "eq" | "ne" | "lt" | "gt" | "le" | "ge" => {
-                            let cmp = self.fresh_var();
                             let pred = match op_str.as_str() {
                                 "eq" => "oeq",
                                 "ne" => "one",
@@ -125,26 +146,36 @@ impl LLVMCodegen {
                                 "ge" => "oge",
                                 _ => unreachable!(),
                             };
+                            let cmp = self.fresh_var();
                             ir.push_str(&format!("  {} = fcmp {} double {}, {}\n", cmp, pred, left_var, right_var));
-                            ir.push_str(&format!("  {} = uitofp i1 {} to double\n", var, cmp));
+                            let result_var = self.fresh_var();
+                            ir.push_str(&format!("  {} = uitofp i1 {} to double\n", result_var, cmp));
+                            var_map.insert(node_id, result_var.clone());
+                            last_var = Some(result_var);
                         }
                         "and" => {
                             let l0 = self.fresh_var();
-                            let r0 = self.fresh_var();
-                            let pred = self.fresh_var();
                             ir.push_str(&format!("  {} = fcmp one double {}, 0.0\n", l0, left_var));
+                            let r0 = self.fresh_var();
                             ir.push_str(&format!("  {} = fcmp one double {}, 0.0\n", r0, right_var));
+                            let pred = self.fresh_var();
                             ir.push_str(&format!("  {} = and i1 {}, {}\n", pred, l0, r0));
-                            ir.push_str(&format!("  {} = uitofp i1 {} to double\n", var, pred));
+                            let result_var = self.fresh_var();
+                            ir.push_str(&format!("  {} = uitofp i1 {} to double\n", result_var, pred));
+                            var_map.insert(node_id, result_var.clone());
+                            last_var = Some(result_var);
                         }
                         "or" => {
                             let l0 = self.fresh_var();
-                            let r0 = self.fresh_var();
-                            let pred = self.fresh_var();
                             ir.push_str(&format!("  {} = fcmp one double {}, 0.0\n", l0, left_var));
+                            let r0 = self.fresh_var();
                             ir.push_str(&format!("  {} = fcmp one double {}, 0.0\n", r0, right_var));
+                            let pred = self.fresh_var();
                             ir.push_str(&format!("  {} = or i1 {}, {}\n", pred, l0, r0));
-                            ir.push_str(&format!("  {} = uitofp i1 {} to double\n", var, pred));
+                            let result_var = self.fresh_var();
+                            ir.push_str(&format!("  {} = uitofp i1 {} to double\n", result_var, pred));
+                            var_map.insert(node_id, result_var.clone());
+                            last_var = Some(result_var);
                         }
                         _ => {
                             return Err(format!("Unsupported binary operator: {}", op_str));
@@ -177,13 +208,17 @@ impl LLVMCodegen {
                             }
                             let arg_var = var_map.get(&node.inputs[0]).ok_or("Argument not found")?;
                             let neg_var = self.fresh_var();
-                            let exp_var = self.fresh_var();
-                            let one_add = self.fresh_var();
-
                             ir.push_str(&format!("  {} = fsub double 0.0, {}\n", neg_var, arg_var));
+                            let exp_var = self.fresh_var();
                             ir.push_str(&format!("  {} = call double @llvm.exp.f64(double {})\n", exp_var, neg_var));
+                            let one_add = self.fresh_var();
                             ir.push_str(&format!("  {} = fadd double 1.0, {}\n", one_add, exp_var));
-                            ir.push_str(&format!("  {} = fdiv double 1.0, {}\n", var, one_add));
+                            // Use a fresh var for the result (allocated after temporaries)
+                            let result_var = self.fresh_var();
+                            ir.push_str(&format!("  {} = fdiv double 1.0, {}\n", result_var, one_add));
+                            // Update var_map with the actual result variable
+                            var_map.insert(node_id, result_var.clone());
+                            last_var = Some(result_var);
                         }
                         "relu" => {
                             if node.inputs.len() != 1 {
@@ -200,9 +235,15 @@ impl LLVMCodegen {
             }
         }
 
-        // Return the last computed value
-        if let Some(last_var) = last_var {
-            ir.push_str(&format!("  ret double {}\n", last_var));
+        // Return the specified node, or the last computed value if not specified
+        let ret_var = if let Some(ret_node) = return_node {
+            var_map.get(&ret_node).cloned()
+        } else {
+            last_var
+        };
+        
+        if let Some(ret_var) = ret_var {
+            ir.push_str(&format!("  ret double {}\n", ret_var));
         } else {
             ir.push_str("  ret double 0.0\n");
         }

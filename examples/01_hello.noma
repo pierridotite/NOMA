@@ -1,0 +1,10 @@
+// Example 1: Hello NOMA
+// Basic computation - no learning
+
+fn main() {
+    let x = 5.0;
+    let y = x * x;
+    return y;
+}
+
+// Output: 25.0

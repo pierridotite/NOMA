@@ -1,0 +1,18 @@
+// Example 5: Quadratic Minimization
+// Find x that minimizes f(x) = (x - 3)^2 + 1
+
+fn main() {
+    learn x = 10.0;
+    let target = 3.0;
+    let one = 1.0;
+    
+    optimize(x) until loss < 0.0001 {
+        let delta = x - target;
+        let loss = delta * delta + one;
+        minimize loss;
+    }
+    
+    return x;
+}
+
+// Output: ~3.0 (minimum of (x-3)^2 + 1 is at x=3)

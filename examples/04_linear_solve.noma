@@ -1,0 +1,19 @@
+// Example 4: Solve Linear Equation
+// Find w such that 5 * w = 25 (answer: w = 5)
+
+fn main() {
+    learn w = 0.1;
+    let input = 5.0;
+    let target = 25.0;
+    
+    optimize(w) until loss < 0.001 {
+        let pred = input * w;
+        let error = pred - target;
+        let loss = error * error;
+        minimize loss;
+    }
+    
+    return w;
+}
+
+// Output: ~5.0 (w converges to solve 5w = 25)

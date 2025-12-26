@@ -1,0 +1,15 @@
+// Example 3: Gradient Descent
+// Find x that minimizes y = x^2
+
+fn main() {
+    learn x = 5.0;
+    
+    optimize(x) until y < 0.0001 {
+        let y = x * x;
+        minimize y;
+    }
+    
+    return x;
+}
+
+// Output: ~0.0 (x converges to minimum of x^2)

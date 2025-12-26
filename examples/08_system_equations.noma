@@ -1,0 +1,24 @@
+// Example 8: System of Nonlinear Equations (HARD)
+// Find (a, b) such that: a + b = 10 AND a * b = 21
+// Exact solutions: (3, 7) or (7, 3)
+
+fn main() {
+    learn a = 1.0;
+    learn b = 1.0;
+    let target_sum = 10.0;
+    let target_prod = 21.0;
+    
+    optimize(a) until loss < 0.001 {
+        let sum_err = a + b - target_sum;
+        let prod_err = a * b - target_prod;
+        let loss = sum_err * sum_err + prod_err * prod_err;
+        minimize loss;
+    }
+    
+    return a;
+}
+
+// This solves a system of non-linear equations via gradient descent
+// May converge to local minimum instead of exact solution
+// Exact solutions: a=3, b=7 or a=7, b=3
+// Actual result depends on learning rate and initialization

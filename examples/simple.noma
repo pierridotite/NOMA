@@ -1,9 +1,0 @@
-// Simple variable with gradient
-// Testing the 'learn' keyword and basic expressions
-
-fn main() {
-    learn x = 5.0;
-    let y = x * x;
-    
-    minimize y;
-}
