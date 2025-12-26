@@ -1,0 +1,17 @@
+// Example 9: Custom Hyperparameters
+// Override learning rate and max iterations from Noma code
+
+fn main() {
+    // Provide hyperparameters as regular variables
+    let learning_rate = 0.05;     // default was 0.1 (build/compile)
+    let max_iterations = 5000;    // default was 1000 (build/compile)
+
+    learn x = 5.0;
+
+    optimize(x) until loss < 0.000001 {
+        let loss = x * x;
+        minimize loss;
+    }
+
+    return x; // Should converge faster/tighter with custom settings
+}

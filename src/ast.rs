@@ -5,6 +5,11 @@ use std::fmt;
 pub enum Expression {
     /// Numeric literal (e.g., 5.0, 42)
     Number(f64),
+    /// Tensor literal with flat data and shape (row-major)
+    TensorLiteral {
+        data: Vec<f64>,
+        shape: Vec<usize>,
+    },
     /// Identifier (e.g., x, y, main)
     Identifier(String),
     /// Binary operation (e.g., x + y, x * y)
@@ -22,6 +27,11 @@ pub enum Expression {
     Call {
         name: String,
         args: Vec<Expression>,
+    },
+    /// Indexing into tensors: a[i], a[i][j]
+    Index {
+        target: Box<Expression>,
+        indices: Vec<Expression>,
     },
 }
 
@@ -129,6 +139,9 @@ impl fmt::Display for Expression {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Expression::Number(n) => write!(f, "{}", n),
+            Expression::TensorLiteral { data, shape } => {
+                write!(f, "tensor[shape={:?}, data={:?}]", shape, data)
+            }
             Expression::Identifier(name) => write!(f, "{}", name),
             Expression::BinaryOp { left, op, right } => {
                 write!(f, "({} {} {})", left, op, right)
@@ -142,6 +155,10 @@ impl fmt::Display for Expression {
                     .collect::<Vec<_>>()
                     .join(", ");
                 write!(f, "{}({})", name, args_str)
+            }
+            Expression::Index { target, indices } => {
+                let idx_str = indices.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ");
+                write!(f, "{}[{}]", target, idx_str)
             }
         }
     }

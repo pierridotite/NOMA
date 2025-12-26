@@ -1,0 +1,28 @@
+// Example 12: Linear regression on a small dataset
+// Fit W to minimize mean squared error: Y = X @ W
+
+fn main() {
+    // Dataset: 4 samples, 2 features
+    let X = tensor [[1.0, 1.0], [1.0, 2.0], [2.0, 1.0], [3.0, 2.0]];  // (4x2)
+    // True weights ~ [2, 3], so targets:
+    let T = tensor [[5.0], [8.0], [7.0], [12.0]];                     // (4x1)
+
+    // Learnable weights (2x1)
+    learn W = tensor [[0.0], [0.0]];
+
+    // Hyperparams can be set in-source
+    let learning_rate = 0.05;
+    let max_iterations = 20000;
+
+    optimize(W) until loss < 0.0000001 {
+        let Y = matmul(X, W);            // (4x1)
+        let E = Y - T;                   // (4x1)
+        let loss = mean(E * E);          // scalar
+        minimize loss;
+    }
+
+    // Return learned weights average for a compact scalar output
+    let Yf = matmul(X, W);
+    let final_loss = mean((Yf - T) * (Yf - T));
+    return final_loss;  // Expect ~0
+}

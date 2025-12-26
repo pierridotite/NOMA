@@ -429,6 +429,21 @@ impl Parser {
                         });
                     }
                 }
+                TokenType::LBracket => {
+                    // Indexing: expr[ index ] ; allow chaining: expr[a][b]
+                    self.advance(); // consume '['
+                    let index_expr = self.parse_expression()?;
+                    self.consume(TokenType::RBracket, "Expected ']' after index expression")?;
+
+                    // If existing expr is already an Index, append; else create new
+                    expr = match expr {
+                        Expression::Index { target, mut indices } => {
+                            indices.push(index_expr);
+                            Expression::Index { target, indices }
+                        }
+                        other => Expression::Index { target: Box::new(other), indices: vec![index_expr] },
+                    };
+                }
                 _ => break,
             }
         }
@@ -438,6 +453,10 @@ impl Parser {
 
     fn parse_primary(&mut self) -> Result<Expression, NomaError> {
         match self.peek().token_type {
+            TokenType::Tensor => {
+                self.advance();
+                self.parse_tensor_literal()
+            }
             TokenType::Number(n) => {
                 self.advance();
                 Ok(Expression::Number(n))
@@ -458,6 +477,103 @@ impl Parser {
                 line: self.peek().line,
                 column: self.peek().column,
             }),
+        }
+    }
+
+    /// Parse a tensor literal: tensor [ 1, 2, 3 ] or tensor [ [1,2], [3,4] ]
+    fn parse_tensor_literal(&mut self) -> Result<Expression, NomaError> {
+        self.consume(TokenType::LBracket, "Expected '[' after 'tensor'")?;
+        let (data, shape) = self.parse_tensor_list()?;
+        self.consume(TokenType::RBracket, "Expected ']' to close tensor literal")?;
+        Ok(Expression::TensorLiteral { data, shape })
+    }
+
+    /// Parses either a flat list of numbers or a nested list of equal-shaped lists.
+    /// Assumes opening '[' has already been consumed by caller of parse_tensor_literal.
+    fn parse_tensor_list(&mut self) -> Result<(Vec<f64>, Vec<usize>), NomaError> {
+        // Detect nested vs flat by peeking: if next is '[' then nested
+        let mut elements: Vec<(Vec<f64>, Vec<usize>)> = Vec::new();
+
+        if matches!(self.peek().token_type, TokenType::RBracket) {
+            return Err(NomaError::ParseError { message: "Empty tensor literal not allowed".into(), line: self.peek().line, column: self.peek().column });
+        }
+
+        loop {
+            match self.peek().token_type {
+                TokenType::LBracket => {
+                    // Nested list
+                    self.advance(); // consume '['
+                    let (sub_data, sub_shape) = self.parse_tensor_list()?;
+                    self.consume(TokenType::RBracket, "Expected ']' in nested tensor list")?;
+                    elements.push((sub_data, sub_shape));
+                }
+                TokenType::Number(_) | TokenType::Minus => {
+                    // Flat number, parse a sequence of numbers separated by commas
+                    let mut data = Vec::new();
+                    // We are inside the outermost '[', so collect until ']' or ', [ ... ]' would have been handled above
+                    loop {
+                        let v = self.parse_number_literal()?;
+                        data.push(v);
+
+                        if matches!(self.peek().token_type, TokenType::Comma) {
+                            self.advance();
+                            if matches!(self.peek().token_type, TokenType::RBracket) {
+                                return Err(NomaError::ParseError { message: "Trailing comma in tensor literal".into(), line: self.peek().line, column: self.peek().column });
+                            }
+                            continue;
+                        }
+                        break;
+                    }
+                    let len = data.len();
+                    return Ok((data, vec![len]));
+                }
+                _ => {
+                    return Err(NomaError::ParseError { message: "Expected '[' or number in tensor literal".into(), line: self.peek().line, column: self.peek().column });
+                }
+            }
+
+            // After each element, expect either ',' to continue or ']' handled by caller
+            if matches!(self.peek().token_type, TokenType::Comma) {
+                self.advance();
+                if matches!(self.peek().token_type, TokenType::RBracket) {
+                    return Err(NomaError::ParseError { message: "Trailing comma in tensor literal".into(), line: self.peek().line, column: self.peek().column });
+                }
+            } else {
+                // No comma: end of list (next should be RBracket, validated by caller)
+                break;
+            }
+        }
+
+        // Validate rectangular nested lists and compute shape
+        if elements.is_empty() {
+            return Err(NomaError::ParseError { message: "Empty tensor literal not allowed".into(), line: self.peek().line, column: self.peek().column });
+        }
+
+        let first_shape = elements[0].1.clone();
+        for (_, sh) in &elements {
+            if *sh != first_shape {
+                return Err(NomaError::ParseError { message: "Tensor literal must be rectangular".into(), line: self.peek().line, column: self.peek().column });
+            }
+        }
+
+        let mut data: Vec<f64> = Vec::new();
+        for (sub_data, _) in elements {
+            data.extend(sub_data);
+        }
+
+        let mut shape = Vec::with_capacity(1 + first_shape.len());
+        shape.push(data.len() / first_shape.iter().product::<usize>().max(1));
+        shape.extend(first_shape);
+
+        Ok((data, shape))
+    }
+
+    fn parse_number_literal(&mut self) -> Result<f64, NomaError> {
+        let neg = matches!(self.peek().token_type, TokenType::Minus);
+        if neg { self.advance(); }
+        match self.peek().token_type {
+            TokenType::Number(n) => { self.advance(); Ok(if neg { -n } else { n }) }
+            _ => Err(NomaError::ParseError { message: "Expected number literal".into(), line: self.peek().line, column: self.peek().column }),
         }
     }
 

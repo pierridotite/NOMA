@@ -1,0 +1,26 @@
+// Example 13: Broadcasting
+// Add a bias vector to a batch of 2D inputs and compute loss
+
+fn main() {
+    let X = tensor [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]; // shape [2,3]
+    learn b = tensor [0.0, 0.0, 0.0];                   // shape [3]
+
+    // Hyperparameters (optional)
+    let learning_rate = 0.1;
+    let max_iterations = 10000;
+
+    // Target after adding bias
+    let T = tensor [[2.0, 4.0, 6.0], [5.0, 7.0, 9.0]];
+
+    optimize(b) until loss < 0.000001 {
+        let Y = X + b;                 // b broadcasts to [2,3]
+        let E = Y - T;
+        let loss = mean(E * E);
+        minimize loss;
+    }
+
+    // Return final mean error
+    let Yf = X + b;
+    let out = mean((Yf - T) * (Yf - T));
+    return out;
+}

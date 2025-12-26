@@ -120,6 +120,13 @@ enum Commands {
         file: PathBuf,
     },
 
+    /// Run a NOMA source file by interpreting the graph and printing the return value
+    Run {
+        /// Input .noma file
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+    },
+
     /// Run autodiff demo: minimize y = x^2
     Demo,
 
@@ -156,6 +163,9 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Check { file } => {
             check_file(file)?;
+        }
+        Commands::Run { file } => {
+            run_noma(file)?;
         }
         Commands::Demo => {
             run_demo()?;
@@ -207,7 +217,52 @@ fn run_optimize_loop(
         graph.reset_gradients();
     }
 
-    Err("Optimize loop reached max iterations without satisfying condition".to_string())
+    // Log warning but continue (non-convergence is allowed; program continues)
+    eprintln!("Warning: Optimize loop reached max iterations without satisfying condition");
+    Ok(())
+}
+
+/// Pick hyperparameters (learning rate and max iterations) from NOMA variables if present.
+/// Recognized names:
+///  - learning rate: "learning_rate", "lr"
+///  - max iterations: "max_iterations", "max_iter", "iterations"
+/// If not found or invalid, fall back to provided defaults.
+fn pick_hyperparams(
+    graph: &mut ComputationalGraph,
+    variables: &HashMap<String, noma_compiler::NodeId>,
+    default_lr: f64,
+    default_iters: usize,
+) -> (f64, usize) {
+    // Try a forward pass so constants/expressions have values; ignore errors.
+    let _ = graph.forward_pass();
+
+    // Helper to read a scalar value from a variable name
+    let read_scalar = |name: &str| -> Option<f64> {
+        variables.get(name)
+            .and_then(|nid| graph.get_node(*nid))
+            .and_then(|n| n.value.clone())
+            .and_then(|v| match v { noma_compiler::Value::Scalar(s) => Some(s), _ => None })
+    };
+
+    // learning rate
+    let lr = read_scalar("learning_rate")
+        .or_else(|| read_scalar("lr"))
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(default_lr);
+
+    // iterations
+    let iters_f = read_scalar("max_iterations")
+        .or_else(|| read_scalar("max_iter"))
+        .or_else(|| read_scalar("iterations"))
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .unwrap_or(default_iters as f64);
+
+    let mut iters = iters_f.round() as isize;
+    if iters < 1 { iters = 1; }
+    // Cap very large values to avoid runaway compile-time loops
+    let iters = (iters as usize).min(10_000_000);
+
+    (lr, iters)
 }
 
 fn build_file(file: PathBuf, print_ast: bool, print_tokens: bool, print_graph: bool) -> anyhow::Result<()> {
@@ -379,10 +434,26 @@ fn compile_to_llvm(file: PathBuf, output: Option<PathBuf>, optimize: bool, opt_l
         for stmt in stmts {
             match stmt {
                 noma_compiler::Statement::LearnDeclaration { name, value } => {
-                    let init_val = if let noma_compiler::Expression::Number(n) = value { *n } else { 0.0 };
-                    let node_id = graph.add_learnable(name.clone(), init_val);
-                    variables.insert(name.clone(), node_id);
-                    *last_node = Some(node_id);
+                    match value {
+                        noma_compiler::Expression::Number(n) => {
+                            let node_id = graph.add_learnable(name.clone(), *n);
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                        noma_compiler::Expression::TensorLiteral { data, shape } => {
+                            let node_id = graph.add_learnable_tensor(name.clone(), data.clone(), shape.clone())
+                                .map_err(|e| e.to_string())?;
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                        _ => {
+                            // Non-literal init: evaluate expression into node, but for learnable we need an initial value.
+                            // Fallback: create scalar learnable with 0.0
+                            let node_id = graph.add_learnable(name.clone(), 0.0);
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                    }
                 }
                 noma_compiler::Statement::LetDeclaration { name, value } => {
                     let val_id = graph.build_from_expression(value, variables)?;
@@ -412,13 +483,16 @@ fn compile_to_llvm(file: PathBuf, output: Option<PathBuf>, optimize: bool, opt_l
                     lower_statements(graph, variables, inner, last_node)?;
                 }
                 noma_compiler::Statement::OptimizeLoop { target, condition, body, .. } => {
-                    let cond_id = graph.build_from_expression(condition, variables)?;
-
+                    // Lower body first so condition can reference values like `loss`
                     let mut loop_last: Option<noma_compiler::NodeId> = None;
                     lower_statements(graph, variables, body, &mut loop_last)?;
                     let objective = loop_last.or(*last_node).ok_or_else(|| "Optimize loop body produced no expressions".to_string())?;
 
-                    run_optimize_loop(graph, variables, cond_id, objective, target, 0.1, 1000)?;
+                    let cond_id = graph.build_from_expression(condition, variables)?;
+
+                    // Hyperparameters can be provided in-source
+                    let (lr, iters) = pick_hyperparams(graph, variables, 0.1, 1000);
+                    run_optimize_loop(graph, variables, cond_id, objective, target, lr, iters)?;
                     *last_node = Some(objective);
                 }
             }
@@ -546,6 +620,116 @@ fn output_ir(output: Option<PathBuf>, ir: String) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn run_noma(file: PathBuf) -> anyhow::Result<()> {
+    println!("Running: {}", file.display());
+
+    let source = std::fs::read_to_string(&file)?;
+    let mut lexer = Lexer::new(&source);
+    let tokens = lexer.tokenize().map_err(|e| anyhow::anyhow!("{:?}", e))?;
+
+    let mut parser = NomaParser::new(tokens);
+    let ast = parser.parse().map_err(|e| anyhow::anyhow!("{:?}", e))?;
+
+    // Lower first function to graph
+    let mut graph = ComputationalGraph::new();
+    let mut variables: HashMap<String, noma_compiler::NodeId> = HashMap::new();
+    let mut last_node: Option<noma_compiler::NodeId> = None;
+
+    let maybe_func = ast.items.iter().find_map(|item| {
+        if let noma_compiler::Item::Function(func) = item {
+            if func.name == "main" { return Some(func); }
+        }
+        None
+    }).or_else(|| ast.items.iter().find_map(|item| {
+        if let noma_compiler::Item::Function(func) = item { Some(func) } else { None }
+    }));
+
+    let func = maybe_func.ok_or_else(|| anyhow::anyhow!("No function found to run"))?;
+
+    fn lower_statements(
+        graph: &mut ComputationalGraph,
+        variables: &mut HashMap<String, noma_compiler::NodeId>,
+        stmts: &[noma_compiler::Statement],
+        last_node: &mut Option<noma_compiler::NodeId>,
+    ) -> Result<(), String> {
+        for stmt in stmts {
+            match stmt {
+                noma_compiler::Statement::LearnDeclaration { name, value } => {
+                    match value {
+                        noma_compiler::Expression::Number(n) => {
+                            let node_id = graph.add_learnable(name.clone(), *n);
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                        noma_compiler::Expression::TensorLiteral { data, shape } => {
+                            let node_id = graph.add_learnable_tensor(name.clone(), data.clone(), shape.clone())
+                                .map_err(|e| e.to_string())?;
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                        _ => {
+                            let node_id = graph.add_learnable(name.clone(), 0.0);
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                    }
+                }
+                noma_compiler::Statement::LetDeclaration { name, value } => {
+                    let val_id = graph.build_from_expression(value, variables)?;
+                    variables.insert(name.clone(), val_id);
+                    *last_node = Some(val_id);
+                }
+                noma_compiler::Statement::Assignment { name, value } => {
+                    let val_id = graph.build_from_expression(value, variables)?;
+                    variables.insert(name.clone(), val_id);
+                    *last_node = Some(val_id);
+                }
+                noma_compiler::Statement::Minimize(expr) => {
+                    let id = graph.build_from_expression(expr, variables)?;
+                    *last_node = Some(id);
+                }
+                noma_compiler::Statement::Expression(expr) => {
+                    let id = graph.build_from_expression(expr, variables)?;
+                    *last_node = Some(id);
+                }
+                noma_compiler::Statement::Return(opt_expr) => {
+                    if let Some(expr) = opt_expr {
+                        let id = graph.build_from_expression(expr, variables)?;
+                        *last_node = Some(id);
+                    }
+                }
+                noma_compiler::Statement::Block(inner) => {
+                    lower_statements(graph, variables, inner, last_node)?;
+                }
+                noma_compiler::Statement::OptimizeLoop { target, condition, body, .. } => {
+                    // Lower body then build condition to allow referencing loss
+                    let mut loop_last: Option<noma_compiler::NodeId> = None;
+                    lower_statements(graph, variables, body, &mut loop_last)?;
+                    let objective = loop_last.or(*last_node).ok_or_else(|| "Optimize loop body produced no expressions".to_string())?;
+                    let cond_id = graph.build_from_expression(condition, variables)?;
+
+                    let (lr, iters) = pick_hyperparams(graph, variables, 0.1, 1000);
+                    run_optimize_loop(graph, variables, cond_id, objective, target, lr, iters)?;
+                    *last_node = Some(objective);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    lower_statements(&mut graph, &mut variables, &func.body, &mut last_node)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    graph.forward_pass().map_err(|e| anyhow::anyhow!(e))?;
+    let out_node = last_node.ok_or_else(|| anyhow::anyhow!("No value to return"))?;
+    let val = graph.get_node(out_node).and_then(|n| n.value.clone()).ok_or_else(|| anyhow::anyhow!("No value computed"))?;
+    match val {
+        noma_compiler::Value::Scalar(s) => println!("Result: {}", s),
+        noma_compiler::Value::Tensor(t) => println!("Result tensor {:?}: {:?}", t.shape, t.data),
+    }
+
+    Ok(())
+}
 fn compile_to_ptx(file: PathBuf, output: Option<PathBuf>, n_elems: Option<u32>, host_stub: bool, optimize: bool, fast_math: bool) -> anyhow::Result<()> {
     // Read source file
     let source = fs::read_to_string(&file)?;
@@ -582,10 +766,24 @@ fn compile_to_ptx(file: PathBuf, output: Option<PathBuf>, n_elems: Option<u32>, 
         for stmt in stmts {
             match stmt {
                 noma_compiler::Statement::LearnDeclaration { name, value } => {
-                    let init_val = if let noma_compiler::Expression::Number(n) = value { *n } else { 0.0 };
-                    let node_id = graph.add_learnable(name.clone(), init_val);
-                    variables.insert(name.clone(), node_id);
-                    *last_node = Some(node_id);
+                    match value {
+                        noma_compiler::Expression::Number(n) => {
+                            let node_id = graph.add_learnable(name.clone(), *n);
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                        noma_compiler::Expression::TensorLiteral { data, shape } => {
+                            let node_id = graph.add_learnable_tensor(name.clone(), data.clone(), shape.clone())
+                                .map_err(|e| e.to_string())?;
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                        _ => {
+                            let node_id = graph.add_learnable(name.clone(), 0.0);
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                    }
                 }
                 noma_compiler::Statement::LetDeclaration { name, value } => {
                     let val_id = graph.build_from_expression(value, variables)?;
@@ -615,12 +813,16 @@ fn compile_to_ptx(file: PathBuf, output: Option<PathBuf>, n_elems: Option<u32>, 
                     lower_statements(graph, variables, inner, last_node)?;
                 }
                 noma_compiler::Statement::OptimizeLoop { target, condition, body, .. } => {
-                    let cond_id = graph.build_from_expression(condition, variables)?;
+                    // Lower body first so condition can use variables like `loss`
                     let mut loop_last: Option<noma_compiler::NodeId> = None;
                     lower_statements(graph, variables, body, &mut loop_last)?;
                     let objective = loop_last.or(*last_node).ok_or_else(|| "Optimize loop body produced no expressions".to_string())?;
 
-                    run_optimize_loop(graph, variables, cond_id, objective, target, 0.1, 1000)?;
+                    let cond_id = graph.build_from_expression(condition, variables)?;
+
+                    // Hyperparameters can be provided in-source
+                    let (lr, iters) = pick_hyperparams(graph, variables, 0.1, 1000);
+                    run_optimize_loop(graph, variables, cond_id, objective, target, lr, iters)?;
                     *last_node = Some(objective);
                 }
             }
@@ -709,10 +911,24 @@ fn build_executable(file: PathBuf, output: PathBuf, opt_level: Option<u8>, fast_
         for stmt in stmts {
             match stmt {
                 noma_compiler::Statement::LearnDeclaration { name, value } => {
-                    let init_val = if let noma_compiler::Expression::Number(n) = value { *n } else { 0.0 };
-                    let node_id = graph.add_learnable(name.clone(), init_val);
-                    variables.insert(name.clone(), node_id);
-                    *last_node = Some(node_id);
+                    match value {
+                        noma_compiler::Expression::Number(n) => {
+                            let node_id = graph.add_learnable(name.clone(), *n);
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                        noma_compiler::Expression::TensorLiteral { data, shape } => {
+                            let node_id = graph.add_learnable_tensor(name.clone(), data.clone(), shape.clone())
+                                .map_err(|e| e.to_string())?;
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                        _ => {
+                            let node_id = graph.add_learnable(name.clone(), 0.0);
+                            variables.insert(name.clone(), node_id);
+                            *last_node = Some(node_id);
+                        }
+                    }
                 }
                 noma_compiler::Statement::LetDeclaration { name, value } => {
                     let val_id = graph.build_from_expression(value, variables)?;
@@ -751,9 +967,8 @@ fn build_executable(file: PathBuf, output: PathBuf, opt_level: Option<u8>, fast_
                     // Build condition expression ONCE (using variables that now exist)
                     let cond_id = graph.build_from_expression(condition, variables)?;
                     
-                    // Run optimization at compile-time
-                    let lr = 0.001;  // Small learning rate for stability on hard problems
-                    let max_iter = 100000;  // More iterations to compensate for small lr
+                    // Run optimization at compile-time, allowing in-source overrides
+                    let (lr, max_iter) = pick_hyperparams(graph, variables, 0.001, 100000);
                     for _ in 0..max_iter {
                         graph.forward_pass()?;
                         let cond_val = graph.get_node(cond_id)

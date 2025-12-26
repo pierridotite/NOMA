@@ -1,0 +1,111 @@
+{
+  "name": "noma-lang",
+  "displayName": "NOMA Language",
+  "description": "Syntax highlighting and language support for the NOMA programming language",
+  "version": "0.1.0",
+  "publisher": "noma",
+  "engines": {
+    "vscode": "^1.74.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "noma",
+    "machine learning",
+    "autodiff",
+    "automatic differentiation",
+    "ml"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pierridotite/Noma"
+  },
+  "license": "MIT",
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:noma"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "noma",
+        "aliases": [
+          "NOMA",
+          "noma"
+        ],
+        "extensions": [
+          ".noma"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "noma",
+        "scopeName": "source.noma",
+        "path": "./syntaxes/noma.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "noma",
+        "path": "./snippets/noma.json"
+      }
+    ],
+    "commands": [
+      {
+        "command": "noma.run",
+        "title": "NOMA: Run Current File",
+        "icon": "$(play)"
+      },
+      {
+        "command": "noma.build",
+        "title": "NOMA: Build Current File",
+        "icon": "$(gear)"
+      }
+    ],
+    "menus": {
+      "editor/title": [
+        {
+          "when": "resourceLangId == noma",
+          "command": "noma.run",
+          "group": "navigation"
+        }
+      ]
+    },
+    "keybindings": [
+      {
+        "command": "noma.run",
+        "key": "ctrl+shift+r",
+        "mac": "cmd+shift+r",
+        "when": "resourceLangId == noma"
+      },
+      {
+        "command": "noma.build",
+        "key": "ctrl+shift+b",
+        "mac": "cmd+shift+b",
+        "when": "resourceLangId == noma"
+      }
+    ],
+    "configurationDefaults": {
+      "[noma]": {
+        "editor.tabSize": 4,
+        "editor.insertSpaces": true,
+        "editor.detectIndentation": false
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^18.0.0",
+    "@types/vscode": "^1.74.0",
+    "typescript": "^5.0.0",
+    "@vscode/vsce": "^2.22.0"
+  }
+}

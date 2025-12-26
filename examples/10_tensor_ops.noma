@@ -1,0 +1,22 @@
+// Example 10: Tensor operations (elementwise)
+// Demonstrates tensor literals and elementwise arithmetic
+
+fn main() {
+    let A = tensor [[1.0, 2.0], [3.0, 4.0]];   // shape [2,2]
+    let B = tensor [[5.0, 6.0], [7.0, 8.0]];   // shape [2,2]
+
+    // Elementwise add/mul supported; scalar-tensor broadcasting also works
+    let C = A + B;            // [[6, 8], [10, 12]]
+    let D = A * 2.0;          // [[2, 4], [6, 8]]
+
+    // Nonlinear function applies elementwise
+    let E = sigmoid(D);
+
+    // Indexing and reductions
+    let e00 = E[0][0];      // scalar
+    let total = sum(C);     // scalar
+    let avg = mean(C);      // scalar
+
+    // Return any scalar; here we return the sum
+    return total;
+}

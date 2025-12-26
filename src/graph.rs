@@ -281,7 +281,19 @@ impl ComputationalGraph {
     pub fn build_from_expression(&mut self, expr: &Expression, variables: &HashMap<String, NodeId>) -> Result<NodeId, String> {
         match expr {
             Expression::Number(n) => Ok(self.add_constant(*n)),
+            Expression::TensorLiteral { data, shape } => {
+                self.add_constant_tensor(data.clone(), shape.clone())
+            }
             Expression::Identifier(name) => variables.get(name).copied().ok_or_else(|| format!("Undefined variable: {}", name)),
+            Expression::Index { target, indices } => {
+                // Lower as a function call: index(target, i, j, ...)
+                let t_id = self.build_from_expression(target, variables)?;
+                let mut args = vec![t_id];
+                for idx in indices {
+                    args.push(self.build_from_expression(idx, variables)?);
+                }
+                Ok(self.add_function_call("index".to_string(), args))
+            }
             Expression::BinaryOp { left, op, right } => {
                 let left_id = self.build_from_expression(left, variables)?;
                 let right_id = self.build_from_expression(right, variables)?;
@@ -413,10 +425,7 @@ impl ComputationalGraph {
                             let right_val = self.nodes.get(&inputs[1]).and_then(|n| n.value.clone()).ok_or("Missing right operand")?;
 
                             let result = match op.as_str() {
-                                "add" => left_val.map2(&right_val, |a, b| a + b)?,
-                                "sub" => left_val.map2(&right_val, |a, b| a - b)?,
-                                "mul" => left_val.map2(&right_val, |a, b| a * b)?,
-                                "div" => left_val.map2(&right_val, |a, b| a / b)?,
+                                "add" | "sub" | "mul" | "div" => broadcast_binary(&left_val, &right_val, op.as_str())?,
                                 "mod" => left_val.map2(&right_val, |a, b| a % b)?,
                                 "pow" => left_val.map2(&right_val, |a, b| a.powf(b))?,
                                 "eq" => Value::Scalar(if (left_val.as_scalar().unwrap_or(f64::NAN) - right_val.as_scalar().unwrap_or(f64::NAN)).abs() < f64::EPSILON { 1.0 } else { 0.0 }),
@@ -471,6 +480,143 @@ impl ComputationalGraph {
                                     node.value = Some(result);
                                 }
                             }
+                        }
+                        "print" => {
+                            if inputs.len() != 1 { return Err("print expects 1 argument".to_string()); }
+                            let val = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone()).ok_or("Missing argument")?;
+                            match &val {
+                                Value::Scalar(s) => println!("[print] {}", s),
+                                Value::Tensor(t) => println!("[print] tensor {:?}: {:?}", t.shape, if t.data.len() > 16 { &t.data[..16] } else { &t.data[..] }),
+                            }
+                            if let Some(node) = self.nodes.get_mut(&node_id) { node.value = Some(val); }
+                        }
+                        "dot" => {
+                            if inputs.len() != 2 { return Err("dot expects 2 arguments".to_string()); }
+                            let a = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone()).ok_or("Missing arg a")?;
+                            let b = self.nodes.get(&inputs[1]).and_then(|n| n.value.clone()).ok_or("Missing arg b")?;
+                            let result = match (a, b) {
+                                (Value::Tensor(ta), Value::Tensor(tb)) => {
+                                    if ta.shape.len() != 1 || tb.shape.len() != 1 { return Err("dot expects rank-1 tensors".to_string()); }
+                                    if ta.shape[0] != tb.shape[0] { return Err("dot vector sizes must match".to_string()); }
+                                    let s = ta.data.iter().zip(tb.data.iter()).map(|(x,y)| x*y).sum();
+                                    Value::Scalar(s)
+                                }
+                                _ => return Err("dot expects tensors".to_string()),
+                            };
+                            if let Some(node) = self.nodes.get_mut(&node_id) { node.value = Some(result); }
+                        }
+                        "matmul" => {
+                            if inputs.len() != 2 { return Err("matmul expects 2 arguments".to_string()); }
+                            let a = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone()).ok_or("Missing arg a")?;
+                            let b = self.nodes.get(&inputs[1]).and_then(|n| n.value.clone()).ok_or("Missing arg b")?;
+                            let result = match (a, b) {
+                                (Value::Tensor(ta), Value::Tensor(tb)) => {
+                                    if ta.shape.len() != 2 || tb.shape.len() != 2 { return Err("matmul expects rank-2 tensors".to_string()); }
+                                    let (m,k) = (ta.shape[0], ta.shape[1]);
+                                    let (k2,n) = (tb.shape[0], tb.shape[1]);
+                                    if k != k2 { return Err("matmul inner dimensions must match".to_string()); }
+                                    let out = matmul_tensors(&ta, &tb)?;
+                                    Value::Tensor(out)
+                                }
+                                _ => return Err("matmul expects tensors".to_string()),
+                            };
+                            if let Some(node) = self.nodes.get_mut(&node_id) { node.value = Some(result); }
+                        }
+                        "matvec" => {
+                            if inputs.len() != 2 { return Err("matvec expects 2 arguments".to_string()); }
+                            let a = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone()).ok_or("Missing arg A")?;
+                            let x = self.nodes.get(&inputs[1]).and_then(|n| n.value.clone()).ok_or("Missing arg x")?;
+                            let result = match (a, x) {
+                                (Value::Tensor(ta), Value::Tensor(tx)) => {
+                                    if ta.shape.len() != 2 || tx.shape.len() != 1 { return Err("matvec expects A rank-2 and x rank-1".to_string()); }
+                                    let (m,k) = (ta.shape[0], ta.shape[1]);
+                                    if tx.shape[0] != k { return Err("matvec inner dimension mismatch".to_string()); }
+                                    let mut out = vec![0.0; m];
+                                    for i in 0..m {
+                                        let mut s = 0.0;
+                                        for j in 0..k { s += ta.data[i*k + j] * tx.data[j]; }
+                                        out[i] = s;
+                                    }
+                                    Value::Tensor(Tensor { data: out, shape: vec![m] })
+                                }
+                                _ => return Err("matvec expects tensors".to_string()),
+                            };
+                            if let Some(node) = self.nodes.get_mut(&node_id) { node.value = Some(result); }
+                        }
+                        "vecmat" => {
+                            if inputs.len() != 2 { return Err("vecmat expects 2 arguments".to_string()); }
+                            let x = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone()).ok_or("Missing arg x")?;
+                            let b = self.nodes.get(&inputs[1]).and_then(|n| n.value.clone()).ok_or("Missing arg B")?;
+                            let result = match (x, b) {
+                                (Value::Tensor(tx), Value::Tensor(tb)) => {
+                                    if tx.shape.len() != 1 || tb.shape.len() != 2 { return Err("vecmat expects x rank-1 and B rank-2".to_string()); }
+                                    let (m,n) = (tb.shape[0], tb.shape[1]);
+                                    if tx.shape[0] != m { return Err("vecmat inner dimension mismatch".to_string()); }
+                                    let mut out = vec![0.0; n];
+                                    for j in 0..n {
+                                        let mut s = 0.0;
+                                        for i in 0..m { s += tx.data[i] * tb.data[i*n + j]; }
+                                        out[j] = s;
+                                    }
+                                    Value::Tensor(Tensor { data: out, shape: vec![n] })
+                                }
+                                _ => return Err("vecmat expects tensors".to_string()),
+                            };
+                            if let Some(node) = self.nodes.get_mut(&node_id) { node.value = Some(result); }
+                        }
+                        "sum" => {
+                            if inputs.len() != 1 { return Err("sum expects 1 argument".to_string()); }
+                            let val = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone()).ok_or("Missing argument")?;
+                            let result = match val {
+                                Value::Scalar(s) => Value::Scalar(s),
+                                Value::Tensor(t) => Value::Scalar(t.data.iter().copied().sum()),
+                            };
+                            if let Some(node) = self.nodes.get_mut(&node_id) { node.value = Some(result); }
+                        }
+                        "mean" => {
+                            if inputs.len() != 1 { return Err("mean expects 1 argument".to_string()); }
+                            let val = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone()).ok_or("Missing argument")?;
+                            let result = match val {
+                                Value::Scalar(s) => Value::Scalar(s),
+                                Value::Tensor(t) => {
+                                    let n = t.data.len() as f64;
+                                    Value::Scalar(t.data.iter().copied().sum::<f64>() / n)
+                                }
+                            };
+                            if let Some(node) = self.nodes.get_mut(&node_id) { node.value = Some(result); }
+                        }
+                        "index" => {
+                            if inputs.len() < 2 { return Err("index expects at least target and one index".to_string()); }
+                            let target_val = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone()).ok_or("Missing target")?;
+                            let mut idx_vals: Vec<usize> = Vec::new();
+                            for &iid in &inputs[1..] {
+                                let s = self.nodes.get(&iid).and_then(|n| n.value.clone()).and_then(|v| v.as_scalar());
+                                let s = s.ok_or("Index must be scalar")?;
+                                if !s.is_finite() { return Err("Index not finite".to_string()); }
+                                let u = if s >= 0.0 { s as usize } else { return Err("Negative index".to_string()); };
+                                idx_vals.push(u);
+                            }
+                            let result = match target_val {
+                                Value::Tensor(t) => {
+                                    if idx_vals.len() != t.shape.len() { return Err("Index rank must match tensor rank".to_string()); }
+                                    // Compute linear index row-major
+                                    let mut stride = 1usize;
+                                    let mut strides = vec![0usize; t.shape.len()];
+                                    for (i, dim) in t.shape.iter().enumerate().rev() {
+                                        strides[i] = stride;
+                                        stride *= *dim;
+                                    }
+                                    let mut linear = 0usize;
+                                    for (i, &idx) in idx_vals.iter().enumerate() {
+                                        if idx >= t.shape[i] { return Err("Index out of bounds".to_string()); }
+                                        linear += idx * strides[i];
+                                    }
+                                    let v = t.data[linear];
+                                    Value::Scalar(v)
+                                }
+                                Value::Scalar(_) => return Err("Cannot index into scalar".to_string()),
+                            };
+                            if let Some(node) = self.nodes.get_mut(&node_id) { node.value = Some(result); }
                         }
                         _ => {}
                     },
@@ -529,51 +675,32 @@ impl ComputationalGraph {
 
                             match op.as_str() {
                                 "add" => {
-                                    if let Some(left_node) = self.nodes.get_mut(&inputs[0]) {
-                                        left_node.gradient = Some(add_grad(left_node.gradient.clone(), gradient.clone())?);
-                                    }
-                                    if let Some(right_node) = self.nodes.get_mut(&inputs[1]) {
-                                        right_node.gradient = Some(add_grad(right_node.gradient.clone(), gradient.clone())?);
-                                    }
+                                    let (la, lb) = (left_val.clone().unwrap(), right_val.clone().unwrap());
+                                    let ga = reduce_grad_for_input(gradient.clone(), &la, &lb, "add", true)?;
+                                    let gb = reduce_grad_for_input(gradient.clone(), &lb, &la, "add", false)?;
+                                    if let Some(left_node) = self.nodes.get_mut(&inputs[0]) { left_node.gradient = Some(add_grad(left_node.gradient.clone(), ga)?); }
+                                    if let Some(right_node) = self.nodes.get_mut(&inputs[1]) { right_node.gradient = Some(add_grad(right_node.gradient.clone(), gb)?); }
                                 }
                                 "sub" => {
-                                    if let Some(left_node) = self.nodes.get_mut(&inputs[0]) {
-                                        left_node.gradient = Some(add_grad(left_node.gradient.clone(), gradient.clone())?);
-                                    }
-                                    if let Some(right_node) = self.nodes.get_mut(&inputs[1]) {
-                                        right_node.gradient = Some(add_grad(right_node.gradient.clone(), negate_value(gradient.clone()))?);
-                                    }
+                                    let (la, lb) = (left_val.clone().unwrap(), right_val.clone().unwrap());
+                                    let ga = reduce_grad_for_input(gradient.clone(), &la, &lb, "sub", true)?;
+                                    let gb = reduce_grad_for_input(gradient.clone(), &lb, &la, "sub", false)?;
+                                    if let Some(left_node) = self.nodes.get_mut(&inputs[0]) { left_node.gradient = Some(add_grad(left_node.gradient.clone(), ga)?); }
+                                    if let Some(right_node) = self.nodes.get_mut(&inputs[1]) { right_node.gradient = Some(add_grad(right_node.gradient.clone(), gb)?); }
                                 }
                                 "mul" => {
-                                    if let Some(left_node) = self.nodes.get_mut(&inputs[0]) {
-                                        if let Some(r) = right_val.clone() {
-                                            let upd = mul_grad(gradient.clone(), r)?;
-                                            left_node.gradient = Some(add_grad(left_node.gradient.clone(), upd)?);
-                                        }
-                                    }
-                                    if let Some(right_node) = self.nodes.get_mut(&inputs[1]) {
-                                        if let Some(l) = left_val.clone() {
-                                            let upd = mul_grad(gradient.clone(), l)?;
-                                            right_node.gradient = Some(add_grad(right_node.gradient.clone(), upd)?);
-                                        }
-                                    }
+                                    let (la, lb) = (left_val.clone().unwrap(), right_val.clone().unwrap());
+                                    let ga = reduce_grad_for_input(gradient.clone(), &la, &lb, "mul", true)?;
+                                    let gb = reduce_grad_for_input(gradient.clone(), &lb, &la, "mul", false)?;
+                                    if let Some(left_node) = self.nodes.get_mut(&inputs[0]) { left_node.gradient = Some(add_grad(left_node.gradient.clone(), ga)?); }
+                                    if let Some(right_node) = self.nodes.get_mut(&inputs[1]) { right_node.gradient = Some(add_grad(right_node.gradient.clone(), gb)?); }
                                 }
                                 "div" => {
-                                    if let Some(left_node) = self.nodes.get_mut(&inputs[0]) {
-                                        if let Some(b) = right_val.clone() {
-                                            let upd = mul_grad(gradient.clone(), inv_value(&b)?)?;
-                                            left_node.gradient = Some(add_grad(left_node.gradient.clone(), upd)?);
-                                        }
-                                    }
-                                    if let Some(right_node) = self.nodes.get_mut(&inputs[1]) {
-                                        if let (Some(a), Some(b)) = (left_val.clone(), right_val.clone()) {
-                                            let b_sq = mul_grad(b.clone(), b.clone())?;
-                                            let num = mul_grad(gradient.clone(), a)?;
-                                            let frac = div_value(num, b_sq)?;
-                                            let neg = negate_value(frac);
-                                            right_node.gradient = Some(add_grad(right_node.gradient.clone(), neg)?);
-                                        }
-                                    }
+                                    let (la, lb) = (left_val.clone().unwrap(), right_val.clone().unwrap());
+                                    let ga = reduce_grad_for_input(gradient.clone(), &la, &lb, "div", true)?;
+                                    let gb = reduce_grad_for_input(gradient.clone(), &lb, &la, "div", false)?;
+                                    if let Some(left_node) = self.nodes.get_mut(&inputs[0]) { left_node.gradient = Some(add_grad(left_node.gradient.clone(), ga)?); }
+                                    if let Some(right_node) = self.nodes.get_mut(&inputs[1]) { right_node.gradient = Some(add_grad(right_node.gradient.clone(), gb)?); }
                                 }
                                 "pow" => {
                                     if let Some(left_node) = self.nodes.get_mut(&inputs[0]) {
@@ -662,6 +789,173 @@ impl ComputationalGraph {
                                         if let Some(node) = self.nodes.get_mut(&inputs[0]) {
                                             node.gradient = Some(add_grad(node.gradient.clone(), local)?);
                                         }
+                                    }
+                                }
+                                "sum" => {
+                                    if let Some(v) = val {
+                                        match v {
+                                            Value::Scalar(_) => {
+                                                if let Some(node) = self.nodes.get_mut(&inputs[0]) {
+                                                    node.gradient = Some(add_grad(node.gradient.clone(), gradient.clone())?);
+                                                }
+                                            }
+                                            Value::Tensor(t) => {
+                                                let g = gradient.as_scalar().ok_or("Expected scalar gradient for sum")?;
+                                                let data = vec![g; t.data.len()];
+                                                let local = Value::Tensor(Tensor { data, shape: t.shape.clone() });
+                                                if let Some(node) = self.nodes.get_mut(&inputs[0]) {
+                                                    node.gradient = Some(add_grad(node.gradient.clone(), local)?);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                "mean" => {
+                                    if let Some(v) = val {
+                                        match v {
+                                            Value::Scalar(_) => {
+                                                if let Some(node) = self.nodes.get_mut(&inputs[0]) {
+                                                    node.gradient = Some(add_grad(node.gradient.clone(), gradient.clone())?);
+                                                }
+                                            }
+                                            Value::Tensor(t) => {
+                                                let g = gradient.as_scalar().ok_or("Expected scalar gradient for mean")?;
+                                                let n = t.data.len() as f64;
+                                                let each = g / n;
+                                                let data = vec![each; t.data.len()];
+                                                let local = Value::Tensor(Tensor { data, shape: t.shape.clone() });
+                                                if let Some(node) = self.nodes.get_mut(&inputs[0]) {
+                                                    node.gradient = Some(add_grad(node.gradient.clone(), local)?);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                "print" => {
+                                    // Pass-through gradient to the printed value
+                                    if let Some(node) = self.nodes.get_mut(&inputs[0]) {
+                                        node.gradient = Some(add_grad(node.gradient.clone(), gradient.clone())?);
+                                    }
+                                }
+                                _ => {}
+                            }
+                        } else {
+                            // 2+ argument function calls
+                            match name.as_str() {
+                                "index" => {
+                                    // Gradient w.r.t. target tensor: scatter upstream scalar into the chosen index
+                                    let target_val = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone());
+                                    if let Some(Value::Tensor(t)) = target_val {
+                                        // Recompute linear index from inputs[1..]
+                                        let mut idx_vals: Vec<usize> = Vec::new();
+                                        for &iid in &inputs[1..] {
+                                            let s = self.nodes.get(&iid).and_then(|n| n.value.clone()).and_then(|v| v.as_scalar());
+                                            let s = s.ok_or("Index must be scalar")?;
+                                            if !s.is_finite() { return Err("Index not finite".to_string()); }
+                                            let u = if s >= 0.0 { s as usize } else { return Err("Negative index".to_string()); };
+                                            idx_vals.push(u);
+                                        }
+                                        if idx_vals.len() != t.shape.len() { return Err("Index rank must match tensor rank".to_string()); }
+                                        let strides = compute_strides(&t.shape);
+                                        let mut linear = 0usize;
+                                        for (i, &idx) in idx_vals.iter().enumerate() {
+                                            if idx >= t.shape[i] { return Err("Index out of bounds".to_string()); }
+                                            linear += idx * strides[i];
+                                        }
+                                        let g_up = gradient.as_scalar().ok_or("Expected scalar gradient for index result")?;
+                                        let mut data = vec![0.0; t.data.len()];
+                                        data[linear] = g_up;
+                                        let local = Value::Tensor(Tensor { data, shape: t.shape.clone() });
+                                        if let Some(node) = self.nodes.get_mut(&inputs[0]) {
+                                            node.gradient = Some(add_grad(node.gradient.clone(), local)?);
+                                        }
+                                    }
+                                }
+                                "dot" => {
+                                    // y = dot(a,b) -> scalar; dy/da = g * b; dy/db = g * a
+                                    let a = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone());
+                                    let b = self.nodes.get(&inputs[1]).and_then(|n| n.value.clone());
+                                    if let (Some(Value::Tensor(ta)), Some(Value::Tensor(tb))) = (a, b) {
+                                        if ta.shape.len() != 1 || tb.shape.len() != 1 || ta.shape[0] != tb.shape[0] {
+                                            return Err("dot backward shape mismatch".to_string());
+                                        }
+                                        let g = gradient.as_scalar().ok_or("Expected scalar gradient for dot")?;
+                                        let ga = Value::Tensor(Tensor { data: tb.data.iter().map(|&v| g * v).collect(), shape: ta.shape.clone() });
+                                        let gb = Value::Tensor(Tensor { data: ta.data.iter().map(|&v| g * v).collect(), shape: tb.shape.clone() });
+                                        if let Some(node) = self.nodes.get_mut(&inputs[0]) {
+                                            node.gradient = Some(add_grad(node.gradient.clone(), ga)?);
+                                        }
+                                        if let Some(node) = self.nodes.get_mut(&inputs[1]) {
+                                            node.gradient = Some(add_grad(node.gradient.clone(), gb)?);
+                                        }
+                                    }
+                                }
+                                "matmul" => {
+                                    // Y = A(m,k) @ B(k,n); dA = dY @ B^T ; dB = A^T @ dY
+                                    let a = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone());
+                                    let b = self.nodes.get(&inputs[1]).and_then(|n| n.value.clone());
+                                    if let (Some(Value::Tensor(ta)), Some(Value::Tensor(tb))) = (a, b) {
+                                        if ta.shape.len() != 2 || tb.shape.len() != 2 { return Err("matmul backward expects rank-2 tensors".to_string()); }
+                                        let (m,k) = (ta.shape[0], ta.shape[1]);
+                                        let (k2,n) = (tb.shape[0], tb.shape[1]);
+                                        if k != k2 { return Err("matmul backward inner dims mismatch".to_string()); }
+                                        let gy = match &gradient {
+                                            Value::Tensor(t) => t.clone(),
+                                            Value::Scalar(_) => return Err("matmul upstream gradient must be tensor".to_string()),
+                                        };
+                                        if gy.shape != vec![m,n] { return Err("matmul upstream gradient shape mismatch".to_string()); }
+                                        // dA = gy (m,n) @ B^T (n,k) = (m,k)
+                                        let bt = transpose_tensor(&tb);
+                                        let dA = matmul_tensors_raw(&gy, &bt)?;
+                                        // dB = A^T (k,m) @ gy (m,n) = (k,n)
+                                        let at = transpose_tensor(&ta);
+                                        let dB = matmul_tensors_raw(&at, &gy)?;
+                                        if let Some(node) = self.nodes.get_mut(&inputs[0]) {
+                                            node.gradient = Some(add_grad(node.gradient.clone(), Value::Tensor(dA))?);
+                                        }
+                                        if let Some(node) = self.nodes.get_mut(&inputs[1]) {
+                                            node.gradient = Some(add_grad(node.gradient.clone(), Value::Tensor(dB))?);
+                                        }
+                                    }
+                                }
+                                "matvec" => {
+                                    // y = A(m,k) @ x(k); dA_ij = g_i * x_j ; dx_j = sum_i g_i * A_ij
+                                    let a = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone());
+                                    let x = self.nodes.get(&inputs[1]).and_then(|n| n.value.clone());
+                                    if let (Some(Value::Tensor(ta)), Some(Value::Tensor(tx))) = (a, x) {
+                                        if ta.shape.len() != 2 || tx.shape.len() != 1 { return Err("matvec backward rank mismatch".to_string()); }
+                                        let (m,k) = (ta.shape[0], ta.shape[1]);
+                                        if tx.shape[0] != k { return Err("matvec backward inner mismatch".to_string()); }
+                                        let gy = match &gradient { Value::Tensor(t) => t.clone(), _ => return Err("matvec upstream grad must be tensor".to_string()) };
+                                        if gy.shape != vec![m] { return Err("matvec upstream grad shape mismatch".to_string()); }
+                                        // dA
+                                        let mut dA = vec![0.0; m*k];
+                                        for i in 0..m { for j in 0..k { dA[i*k + j] = gy.data[i] * tx.data[j]; } }
+                                        // dx
+                                        let mut dx = vec![0.0; k];
+                                        for j in 0..k { let mut s = 0.0; for i in 0..m { s += gy.data[i] * ta.data[i*k + j]; } dx[j] = s; }
+                                        if let Some(node) = self.nodes.get_mut(&inputs[0]) { node.gradient = Some(add_grad(node.gradient.clone(), Value::Tensor(Tensor { data: dA, shape: ta.shape.clone() }))?); }
+                                        if let Some(node) = self.nodes.get_mut(&inputs[1]) { node.gradient = Some(add_grad(node.gradient.clone(), Value::Tensor(Tensor { data: dx, shape: tx.shape.clone() }))?); }
+                                    }
+                                }
+                                "vecmat" => {
+                                    // y = x(m) @ B(m,n); dB_ij = x_i * g_j ; dx_i = sum_j g_j * B_ij
+                                    let x = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone());
+                                    let b = self.nodes.get(&inputs[1]).and_then(|n| n.value.clone());
+                                    if let (Some(Value::Tensor(tx)), Some(Value::Tensor(tb))) = (x, b) {
+                                        if tx.shape.len() != 1 || tb.shape.len() != 2 { return Err("vecmat backward rank mismatch".to_string()); }
+                                        let (m,n) = (tb.shape[0], tb.shape[1]);
+                                        if tx.shape[0] != m { return Err("vecmat backward inner mismatch".to_string()); }
+                                        let gy = match &gradient { Value::Tensor(t) => t.clone(), _ => return Err("vecmat upstream grad must be tensor".to_string()) };
+                                        if gy.shape != vec![n] { return Err("vecmat upstream grad shape mismatch".to_string()); }
+                                        // dB
+                                        let mut dB = vec![0.0; m*n];
+                                        for i in 0..m { for j in 0..n { dB[i*n + j] = tx.data[i] * gy.data[j]; } }
+                                        // dx
+                                        let mut dx = vec![0.0; m];
+                                        for i in 0..m { let mut s = 0.0; for j in 0..n { s += gy.data[j] * tb.data[i*n + j]; } dx[i] = s; }
+                                        if let Some(node) = self.nodes.get_mut(&inputs[0]) { node.gradient = Some(add_grad(node.gradient.clone(), Value::Tensor(Tensor { data: dx, shape: tx.shape.clone() }))?); }
+                                        if let Some(node) = self.nodes.get_mut(&inputs[1]) { node.gradient = Some(add_grad(node.gradient.clone(), Value::Tensor(Tensor { data: dB, shape: tb.shape.clone() }))?); }
                                     }
                                 }
                                 _ => {}
@@ -775,6 +1069,242 @@ fn ln_value(v: &Value) -> Result<Value, String> {
         Value::Scalar(s) => Ok(Value::Scalar(s.ln())),
         Value::Tensor(t) => Ok(Value::Tensor(Tensor { data: t.data.iter().map(|x| x.ln()).collect(), shape: t.shape.clone() })),
     }
+}
+
+fn shape_product(shape: &[usize]) -> usize {
+    shape.iter().product()
+}
+
+fn broadcast_shapes(a: &[usize], b: &[usize]) -> Result<Vec<usize>, String> {
+    let ra = a.len();
+    let rb = b.len();
+    let r = ra.max(rb);
+    let mut out = vec![1usize; r];
+    for i in 0..r {
+        let da = if i < r - ra { 1 } else { a[i - (r - ra)] };
+        let db = if i < r - rb { 1 } else { b[i - (r - rb)] };
+        if da == db || da == 1 || db == 1 {
+            out[i] = da.max(db);
+        } else {
+            return Err("Broadcast shapes not compatible".to_string());
+        }
+    }
+    Ok(out)
+}
+
+fn indices_from_linear(mut idx: usize, shape: &[usize]) -> Vec<usize> {
+    let mut indices = vec![0usize; shape.len()];
+    for i in (0..shape.len()).rev() {
+        let dim = shape[i];
+        indices[i] = idx % dim;
+        idx /= dim;
+    }
+    indices
+}
+
+fn offset_from_indices(indices: &[usize], strides: &[usize]) -> usize {
+    indices.iter().zip(strides.iter()).map(|(i,s)| i * s).sum()
+}
+
+fn broadcast_to(t: &Tensor, out_shape: &[usize]) -> Result<Tensor, String> {
+    let in_shape = &t.shape;
+    let ra = in_shape.len();
+    let rb = out_shape.len();
+    let r = rb;
+    // Check compatibility (rely on broadcast_shapes)
+    let _ = broadcast_shapes(in_shape, out_shape)?;
+
+    let in_strides = compute_strides(in_shape);
+    let mut data = vec![0.0; shape_product(out_shape)];
+    for lin in 0..data.len() {
+        let out_idx = indices_from_linear(lin, out_shape);
+        // Align ranks from right
+        let mut in_idx = vec![0usize; ra];
+        for i in 0..r {
+            let out_axis = i;
+            let in_axis = if i < r - ra { None } else { Some(i - (r - ra)) };
+            if let Some(ia) = in_axis {
+                let dim_in = in_shape[ia];
+                in_idx[ia] = if dim_in == 1 { 0 } else { out_idx[out_axis] };
+            }
+        }
+        let in_off = offset_from_indices(&in_idx, &in_strides);
+        data[lin] = t.data[in_off];
+    }
+    Ok(Tensor { data, shape: out_shape.to_vec() })
+}
+
+fn reduce_to_shape(t: &Tensor, target_shape: &[usize]) -> Result<Tensor, String> {
+    if &t.shape == target_shape { return Ok(t.clone()); }
+    let out = target_shape;
+    // Determine axes to reduce: where target_dim == 1 and t_dim > 1, or target rank < t rank
+    let rt = t.shape.len();
+    let ro = out.len();
+    // Map output axes to t axes (align from right)
+    let mut reduce_axes = vec![false; rt];
+    for i in 0..rt {
+        let ta = t.shape[rt - 1 - i];
+        let oa = if i < ro { out[ro - 1 - i] } else { 1 };
+        if oa == 1 && ta > 1 { reduce_axes[rt - 1 - i] = true; }
+        if i >= ro { reduce_axes[rt - 1 - i] = true; }
+    }
+    // Sum over reduce_axes
+    let out_size = shape_product(out);
+    let mut out_data = vec![0.0; out_size];
+    let out_strides = compute_strides(out);
+    let t_strides = compute_strides(&t.shape);
+    for lin in 0..shape_product(&t.shape) {
+        let idx = indices_from_linear(lin, &t.shape);
+        // Build output index by zeroing reduced axes (since target dim is 1), else keep
+        let mut out_idx = vec![0usize; ro];
+        for i in 0..ro {
+            // Corresponding t axis
+            let t_axis = rt - 1 - i;
+            let dim_o = out[ro - 1 - i];
+            let v = if dim_o == 1 { 0 } else { idx[t_axis] };
+            out_idx[ro - 1 - i] = v;
+        }
+        let o_off = offset_from_indices(&out_idx, &out_strides);
+        out_data[o_off] += t.data[lin];
+    }
+    Ok(Tensor { data: out_data, shape: out.to_vec() })
+}
+
+fn broadcast_binary(a: &Value, b: &Value, op: &str) -> Result<Value, String> {
+    match (a, b) {
+        (Value::Scalar(x), Value::Scalar(y)) => Ok(Value::Scalar(match op { "add"=>x+y, "sub"=>x-y, "mul"=>x*y, "div"=>x/y, _=>unreachable!() })),
+        (Value::Scalar(x), Value::Tensor(tb)) => {
+            let data = tb.data.iter().map(|&y| match op { "add"=>x + y, "sub"=>x - y, "mul"=>x * y, "div"=>x / y, _=>unreachable!() }).collect();
+            Ok(Value::Tensor(Tensor { data, shape: tb.shape.clone() }))
+        }
+        (Value::Tensor(ta), Value::Scalar(y)) => {
+            let data = ta.data.iter().map(|&x| match op { "add"=>x + y, "sub"=>x - y, "mul"=>x * y, "div"=>x / y, _=>unreachable!() }).collect();
+            Ok(Value::Tensor(Tensor { data, shape: ta.shape.clone() }))
+        }
+        (Value::Tensor(ta), Value::Tensor(tb)) => {
+            let out_shape = broadcast_shapes(&ta.shape, &tb.shape)?;
+            if ta.shape == out_shape && tb.shape == out_shape {
+                let data = ta.data.iter().zip(tb.data.iter()).map(|(&x,&y)| match op { "add"=>x+y, "sub"=>x-y, "mul"=>x*y, "div"=>x/y, _=>unreachable!() }).collect();
+                Ok(Value::Tensor(Tensor { data, shape: out_shape }))
+            } else {
+                let a_exp = broadcast_to(ta, &out_shape)?;
+                let b_exp = broadcast_to(tb, &out_shape)?;
+                let data = a_exp.data.iter().zip(b_exp.data.iter()).map(|(&x,&y)| match op { "add"=>x+y, "sub"=>x-y, "mul"=>x*y, "div"=>x/y, _=>unreachable!() }).collect();
+                Ok(Value::Tensor(Tensor { data, shape: out_shape }))
+            }
+        }
+    }
+}
+
+fn reduce_grad_for_input(upstream: Value, input: &Value, other: &Value, op: &str, left_side: bool) -> Result<Value, String> {
+    // Compute raw grad contribution in output shape, then reduce to input shape
+    match (upstream, input, other) {
+        (Value::Scalar(g), Value::Scalar(_), Value::Scalar(o)) => {
+            let gg = match op {
+                "add" => g,
+                "sub" => if left_side { g } else { -g },
+                "mul" => g * *o,
+                "div" => if left_side { g / *o } else { -g / (o * o) },
+                _ => g,
+            };
+            Ok(Value::Scalar(gg))
+        }
+        (Value::Tensor(gy), Value::Scalar(_), Value::Tensor(to)) => {
+            // reduce sum of all elements after computing per-op factor
+            let out_shape = &gy.shape;
+            let o_exp = broadcast_to(to, out_shape)?;
+            let data: Vec<f64> = match op {
+                "add" => gy.data.clone(),
+                "sub" => if left_side { gy.data.clone() } else { gy.data.iter().map(|&v| -v).collect() },
+                "mul" => gy.data.iter().zip(o_exp.data.iter()).map(|(&g,&o)| g * o).collect(),
+                "div" => if left_side { gy.data.iter().zip(o_exp.data.iter()).map(|(&g,&o)| g / o).collect() } else { gy.data.iter().zip(o_exp.data.iter()).map(|(&g,&o)| -g * 1.0 / (o*o)).collect() },
+                _ => gy.data.clone(),
+            };
+            let sum: f64 = data.iter().sum();
+            Ok(Value::Scalar(sum))
+        }
+        (Value::Tensor(gy), Value::Tensor(ti), Value::Scalar(o)) => {
+            // No broadcast on input; just elementwise factor
+            let data: Vec<f64> = match op {
+                "add" => gy.data.clone(),
+                "sub" => if left_side { gy.data.clone() } else { gy.data.iter().map(|&v| -v).collect() },
+                "mul" => gy.data.iter().map(|&g| g * *o).collect(),
+                "div" => if left_side { gy.data.iter().map(|&g| g / *o).collect() } else { gy.data.iter().map(|&g| -g * 1.0 / (o*o)).collect() },
+                _ => gy.data.clone(),
+            };
+            let red = reduce_to_shape(&Tensor { data, shape: gy.shape.clone() }, &ti.shape)?;
+            Ok(Value::Tensor(red))
+        }
+        (Value::Tensor(gy), Value::Tensor(ti), Value::Tensor(to)) => {
+            let out_shape = &gy.shape;
+            let o_exp = broadcast_to(to, out_shape)?;
+            let data: Vec<f64> = match op {
+                "add" => gy.data.clone(),
+                "sub" => if left_side { gy.data.clone() } else { gy.data.iter().map(|&v| -v).collect() },
+                "mul" => gy.data.iter().zip(o_exp.data.iter()).map(|(&g,&o)| g * o).collect(),
+                "div" => if left_side { gy.data.iter().zip(o_exp.data.iter()).map(|(&g,&o)| g / o).collect() } else { gy.data.iter().zip(o_exp.data.iter()).map(|(&g,&o)| -g * 1.0 / (o*o)).collect() },
+                _ => gy.data.clone(),
+            };
+            let red = reduce_to_shape(&Tensor { data, shape: out_shape.clone() }, &ti.shape)?;
+            Ok(Value::Tensor(red))
+        }
+        (Value::Scalar(g), Value::Tensor(ti), Value::Tensor(to)) => {
+            // Upstream scalar: first create gy filled with g with output shape determined by broadcasting of inputs
+            let out_shape = broadcast_shapes(&ti.shape, &to.shape)?;
+            let gy = Tensor { data: vec![g; shape_product(&out_shape)], shape: out_shape.clone() };
+            let o_exp = broadcast_to(to, &out_shape)?;
+            let data: Vec<f64> = match op {
+                "add" => gy.data.clone(),
+                "sub" => if left_side { gy.data.clone() } else { gy.data.iter().map(|&v| -v).collect() },
+                "mul" => gy.data.iter().zip(o_exp.data.iter()).map(|(&g,&o)| g * o).collect(),
+                "div" => if left_side { gy.data.iter().zip(o_exp.data.iter()).map(|(&g,&o)| g / o).collect() } else { gy.data.iter().zip(o_exp.data.iter()).map(|(&g,&o)| -g * 1.0 / (o*o)).collect() },
+                _ => gy.data.clone(),
+            };
+            let red = reduce_to_shape(&Tensor { data, shape: out_shape }, &ti.shape)?;
+            Ok(Value::Tensor(red))
+        }
+        _ => Err("Unsupported gradient configuration".to_string()),
+    }
+}
+
+fn compute_strides(shape: &[usize]) -> Vec<usize> {
+    let mut stride = 1usize;
+    let mut strides = vec![0usize; shape.len()];
+    for (i, dim) in shape.iter().enumerate().rev() {
+        strides[i] = stride;
+        stride *= *dim;
+    }
+    strides
+}
+
+fn transpose_tensor(t: &Tensor) -> Tensor {
+    if t.shape.len() != 2 { return t.clone(); }
+    let (m,n) = (t.shape[0], t.shape[1]);
+    let mut out = vec![0.0; m*n];
+    for i in 0..m { for j in 0..n { out[j*m + i] = t.data[i*n + j]; } }
+    Tensor { data: out, shape: vec![n, m] }
+}
+
+fn matmul_tensors(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
+    if a.shape.len() != 2 || b.shape.len() != 2 { return Err("matmul expects rank-2 tensors".to_string()); }
+    let (m,k) = (a.shape[0], a.shape[1]);
+    let (k2,n) = (b.shape[0], b.shape[1]);
+    if k != k2 { return Err("matmul inner dimensions must match".to_string()); }
+    let mut out = vec![0.0; m*n];
+    for i in 0..m {
+        for j in 0..n {
+            let mut s = 0.0;
+            for p in 0..k {
+                s += a.data[i*k + p] * b.data[p*n + j];
+            }
+            out[i*n + j] = s;
+        }
+    }
+    Ok(Tensor { data: out, shape: vec![m, n] })
+}
+
+fn matmul_tensors_raw(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
+    matmul_tensors(a, b)
 }
 
 #[cfg(test)]

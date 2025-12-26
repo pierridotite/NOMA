@@ -1,13 +1,23 @@
 # NOMA
 
-> The first systems programming language with native, compile-time differentiation.
+<p align="center">
+  <strong>Neural-Oriented Machine Architecture</strong><br>
+  <em>The first systems programming language with native, compile-time automatic differentiation.</em>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/stage-pre--alpha-orange" alt="Stage: Pre-Alpha">
+  <img src="https://img.shields.io/badge/license-MIT-blue" alt="License: MIT">
+  <img src="https://img.shields.io/badge/language-Rust-red" alt="Built with Rust">
+</p>
+
+---
 
 ## What is NOMA?
 
-NOMA is a compiled language designed for machine learning at the hardware level. Unlike Python/PyTorch which interpret code at runtime, NOMA compiles directly to machine code with automatic differentiation built into the compiler.
+NOMA is a compiled programming language designed for machine learning at the hardware level. Unlike Python/PyTorch which interpret code at runtime, NOMA compiles directly to native machine code with **automatic differentiation built into the compiler**.
 
-```rust
-// Find x that minimizes x^2
+```noma
 fn main() {
     learn x = 5.0;
     
@@ -20,71 +30,267 @@ fn main() {
 }
 ```
 
+### Why NOMA?
+
+| Aspect | Python + PyTorch | NOMA |
+|--------|------------------|------|
+| Gradients | Library-based (runtime) | **Compiler-native (compile-time)** |
+| Execution | Interpreted | **Compiled to native binary** |
+| Binary size | ~100MB+ runtime | **~16KB standalone** |
+| Dependencies | numpy, torch, cuda... | **None** |
+| Memory model | Garbage collected | **Deterministic** |
+| Speed | Baseline | **10-20x faster** |
+
+---
+
 ## Quick Start
 
+### Installation
+
 ```bash
-# Build
+# Clone the repository
+git clone https://github.com/pierridotite/Noma.git
+cd Noma
+
+# Build the compiler
 cargo build --release
+```
 
-# Compile a NOMA program to executable
+### Run Your First Program
+
+```bash
+# Interpret and run directly (no external toolchain required)
+cargo run -- run examples/03_gradient_descent.noma
+
+# Or compile to a standalone executable
 cargo run -- build-exe examples/04_linear_solve.noma -o solver
-
-# Run
 ./solver
-# Output: 4.995215
 ```
 
-## Examples
+---
 
-| File | Description | Output | Notes |
-|------|-------------|--------|-------|
-| `01_hello.noma` | Basic computation | 25.0 | |
-| `02_sigmoid.noma` | Neural activation | 0.999 | |
-| `03_gradient_descent.noma` | Minimize x^2 | ~0.01 | |
-| `04_linear_solve.noma` | Solve 5w = 25 | ~5.0 | |
-| `05_quadratic_min.noma` | Minimize (x-3)^2 | 3.0 | |
-| `06_neural_network.noma` | 2-layer perceptron | ~0.89 | Target: 0.9 |
-| `07_rosenbrock.noma` | Rosenbrock function | ~0.99 | Target: 1.0 |
-| `08_system_equations.noma` | Nonlinear system | ~4.6 | Local minimum |
+## Language Guide
 
-## Python Comparison
+### Variables
 
-### The Problem
-
-```python
-# Python: Manual gradients required
-x = 5.0
-for _ in range(1000):
-    y = x * x
-    grad = 2 * x  # YOU compute this
-    x = x - 0.01 * grad
+```noma
+let x = 5.0;        // Immutable constant
+learn w = 0.1;      // Learnable parameter (tracked for gradients)
 ```
 
-### The Solution
+### Optimization Loop
 
-```rust
-// NOMA: Automatic differentiation
-fn main() {
-    learn x = 5.0;
-    optimize(x) until y < 0.0001 {
-        let y = x * x;
-        minimize y;  // Compiler computes gradients
-    }
-    return x;
+The core of NOMA: define what to optimize and let the compiler handle gradients.
+
+```noma
+learn x = 5.0;
+
+optimize(x) until loss < 0.0001 {
+    let loss = x * x;
+    minimize loss;
 }
 ```
 
-### Benchmark
+### Hyperparameters
 
-Same computation: solve `5 * w = 25` via gradient descent.
+Control training with special variable names:
+
+```noma
+let learning_rate = 0.01;    // or: let lr = 0.01;
+let max_iterations = 10000;  // or: let max_iter = 10000;
+
+learn w = 0.0;
+optimize(w) until loss < 0.001 {
+    let loss = (w - 5.0) * (w - 5.0);
+    minimize loss;
+}
+```
+
+### Built-in Functions
+
+```noma
+sigmoid(x)    // 1 / (1 + e^(-x))
+relu(x)       // max(0, x)
+sum(tensor)   // Sum all elements → scalar
+mean(tensor)  // Average of all elements → scalar
+print(x)      // Print value (passes through for chaining)
+```
+
+### Tensors
+
+```noma
+// Creation
+let v = tensor [1.0, 2.0, 3.0];              // 1D: shape [3]
+let m = tensor [[1.0, 2.0], [3.0, 4.0]];     // 2D: shape [2, 2]
+
+// Elementwise operations (with broadcasting)
+let a = m + 1.0;       // Add scalar to all elements
+let b = m * m;         // Elementwise multiply
+let c = sigmoid(m);    // Apply function elementwise
+
+// Reductions
+let s = sum(m);        // Sum → scalar
+let u = mean(m);       // Mean → scalar
+
+// Indexing
+let x = m[0][1];       // Access element (row-major)
+
+// Linear algebra
+let d = dot(v1, v2);           // Dot product (1D vectors) → scalar
+let p = matmul(A, B);          // Matrix multiply (2D) → 2D
+let y = matmul(X, W);          // (n×k) @ (k×m) → (n×m)
+```
+
+### Negative Numbers in Tensors
+
+```noma
+let data = tensor [[-0.5], [1.0], [-2.5]];   // Negative literals supported
+```
+
+---
+
+## Examples
+
+### Basic Examples
+
+| Example | Description | Concept |
+|---------|-------------|---------|
+| `01_hello.noma` | Basic arithmetic | Expressions |
+| `02_sigmoid.noma` | Neural activation | Built-in functions |
+| `03_gradient_descent.noma` | Minimize x² | Optimization basics |
+| `04_linear_solve.noma` | Solve 5w = 25 | Linear equations |
+| `05_quadratic_min.noma` | Find minimum of (x-3)² | Quadratic optimization |
+
+### Neural Networks
+
+| Example | Description | Concept |
+|---------|-------------|---------|
+| `06_neural_network.noma` | 2-layer perceptron | Multi-layer networks |
+| `07_rosenbrock.noma` | Rosenbrock function | Non-convex optimization |
+| `08_system_equations.noma` | Nonlinear system | Multi-variable optimization |
+
+### Tensor Operations
+
+| Example | Description | Concept |
+|---------|-------------|---------|
+| `09_hyperparams.noma` | Custom learning rate | Hyperparameter control |
+| `10_tensor_ops.noma` | Tensor basics | Creation, indexing, reductions |
+| `11_matmul.noma` | Matrix multiplication | Linear algebra |
+| `12_linear_regression.noma` | Simple regression | ML pipeline |
+| `13_broadcast.noma` | Broadcasting | Bias addition |
+| `14_synth_regression.noma` | 20-sample regression | Full training loop |
+
+### Linear Regression Example
+
+```noma
+fn main() {
+    // 20 samples, 2 features
+    let X = tensor [
+        [1.0, 1.0], [1.0, 2.0], [2.0, 1.0], [3.0, 2.0],
+        [2.0, 3.0], [3.0, 1.0], [4.0, 2.0], [5.0, 3.0],
+        [6.0, 2.0], [7.0, 3.0], [8.0, 4.0], [9.0, 5.0],
+        [10.0, 6.0], [2.5, 1.5], [3.5, 2.5], [4.5, 3.5],
+        [5.5, 3.5], [6.5, 4.5], [7.5, 5.5], [8.5, 6.5]
+    ];
+
+    // Targets: Y = 1.5*X1 + 2.0*X2
+    let T = tensor [
+        [3.5], [5.5], [5.0], [8.5],
+        [9.0], [6.5], [10.0], [13.5],
+        [13.0], [16.5], [20.0], [23.5],
+        [27.0], [6.75], [10.25], [13.75],
+        [15.25], [18.75], [22.25], [25.75]
+    ];
+
+    learn W = tensor [[0.0], [0.0]];
+
+    let learning_rate = 0.001;
+    let max_iterations = 100000;
+
+    optimize(W) until loss < 0.001 {
+        let Y = matmul(X, W);
+        let E = Y - T;
+        let loss = mean(E * E);
+        minimize loss;
+    }
+
+    print(loss);
+    return W;
+}
+```
+
+---
+
+## Compiler Commands
 
 ```bash
-# NOMA: Compile and time execution
-cargo run --quiet -- build-exe examples/04_linear_solve.noma -o /tmp/solver
-time /tmp/solver
-# Output: 4.995215 in ~0.001s
+# Interpret and run (no compilation needed)
+cargo run -- run <file.noma>
 
-# Python: Same computation
+# Syntax check only
+cargo run -- build <file.noma>
+
+# Compile to LLVM IR
+cargo run -- compile <file.noma> -o output.ll
+
+# Build standalone executable
+cargo run -- build-exe <file.noma> -o output
+
+# Compile to PTX (GPU, experimental)
+cargo run -- compile-ptx <file.noma> -o output.ptx
+```
+
+### Build Options
+
+```bash
+# Optimization level (0-3)
+cargo run -- build-exe <file.noma> -o output -O 3
+
+# Fast math optimizations
+cargo run -- build-exe <file.noma> -o output --fast-math
+
+# Debug output
+cargo run -- build <file.noma> --ast --tokens --graph
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────┐    ┌────────┐    ┌─────┐    ┌───────┐    ┌─────────┐
+│ NOMA Source │───▶│ Lexer  │───▶│ AST │───▶│ Graph │───▶│ LLVM IR │
+└─────────────┘    └────────┘    └─────┘    └───────┘    └─────────┘
+                                               │              │
+                                         ┌─────┴─────┐        ▼
+                                         │  Autodiff │   ┌─────────┐
+                                         │  (Chain   │   │ Native  │
+                                         │   Rule)   │   │ Binary  │
+                                         └───────────┘   └─────────┘
+```
+
+**Compilation Pipeline:**
+
+1. **Lexer** — Tokenizes source into keywords, operators, literals
+2. **Parser** — Builds Abstract Syntax Tree (AST)
+3. **Graph Builder** — Lowers AST to computational graph
+4. **Autodiff Pass** — Applies reverse-mode automatic differentiation
+5. **LLVM Codegen** — Generates optimized LLVM IR
+6. **Native Compilation** — Produces standalone executable via `clang`
+
+---
+
+## Benchmark
+
+Solving `5 * w = 25` via gradient descent:
+
+```bash
+# NOMA (compiled)
+cargo run -q -- build-exe examples/04_linear_solve.noma -o /tmp/solver
+time /tmp/solver
+# → 4.995215 in ~0.001s
+
+# Python (interpreted)
 time python3 -c "
 w = 0.1
 for _ in range(1000):
@@ -92,85 +298,66 @@ for _ in range(1000):
     error = pred - 25.0
     loss = error * error
     if loss < 0.001: break
-    grad = 2 * error * 5.0  # Manual gradient!
+    grad = 2 * error * 5.0
     w = w - 0.01 * grad
 print(f'{w:.6f}')
 "
-# Output: 4.995215 in ~0.016s
+# → 4.995215 in ~0.016s
 ```
 
-| | NOMA | Python |
-|---|------|--------|
-| Execution | 0.001s | 0.016s |
-| Speedup | **16x faster** | baseline |
-| Binary size | 16 KB | ~100 MB runtime |
+| Metric | NOMA | Python |
+|--------|------|--------|
+| Execution time | **0.001s** | 0.016s |
+| Speedup | **16x** | baseline |
+| Binary size | **16 KB** | ~100 MB runtime |
 | Gradients | Automatic | Manual |
 
-### Key Differences
+---
 
-| Aspect | Python + PyTorch | NOMA |
-|--------|------------------|------|
-| Gradients | Manual or library | Automatic (compiler) |
-| Execution | Interpreted | Compiled to native |
-| Binary size | ~100MB+ runtime | ~16KB standalone |
-| Dependencies | numpy, torch, cuda | None |
-| Memory | GC, dynamic | Deterministic |
+## VS Code Extension
 
-## Language Features
+Syntax highlighting is available for `.noma` files. See the [`noma-vscode`](./noma-vscode) extension folder.
 
-### Variables
-
-```rust
-let x = 5.0;        // Immutable constant
-learn w = 0.1;      // Learnable parameter (has gradient)
-```
-
-### Functions
-
-```rust
-sigmoid(x)          // 1 / (1 + e^-x)
-relu(x)             // max(0, x)
-```
-
-### Optimization
-
-```rust
-optimize(variable) until condition {
-    // Define loss
-    minimize loss;
-}
-```
-
-## Architecture
-
-```
-NOMA Source -> Lexer -> Parser -> AST -> Graph -> LLVM IR -> Native Binary
-                                           |
-                                    Autodiff Pass
-                                    (Chain Rule)
-```
-
-The compiler:
-1. Parses NOMA syntax to AST
-2. Lowers to computational graph
-3. Applies reverse-mode autodiff
-4. Generates LLVM IR
-5. Compiles to native executable
+---
 
 ## Status
 
 **Stage: Pre-Alpha**
 
-- [x] Lexer and parser
-- [x] Computational graph
-- [x] Reverse-mode autodiff
-- [x] LLVM IR generation
-- [x] Standalone binary compilation
-- [x] Optimization loops (SGD)
-- [ ] Tensor operations
-- [ ] GPU (PTX) execution
-- [ ] Standard library
+### Implemented
+
+- ✅ Lexer and parser
+- ✅ Computational graph with autodiff
+- ✅ Reverse-mode automatic differentiation
+- ✅ LLVM IR code generation
+- ✅ Standalone binary compilation
+- ✅ Optimization loops (SGD)
+- ✅ Tensor literals and operations
+- ✅ Broadcasting (numpy-like N-D)
+- ✅ Reductions (sum, mean)
+- ✅ Indexing with gradient support
+- ✅ Linear algebra (dot, matmul)
+- ✅ Interpreter mode (`run` command)
+- ✅ Variable hyperparameters
+
+### Planned
+
+- 🔲 GPU execution (PTX/CUDA)
+- 🔲 Standard library
+- 🔲 Control flow (if/else, loops)
+- 🔲 User-defined functions
+- 🔲 Adam/RMSprop optimizers
+- 🔲 Batch processing
+- 🔲 Model serialization
+
+---
+
+## Contributing
+
+Contributions are welcome! Please open an issue or submit a pull request.
+
+---
 
 ## License
 
-MIT
+MIT License — see [LICENSE](LICENSE) for details.

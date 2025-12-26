@@ -1,0 +1,23 @@
+// Example 11: Linear model with matmul and mean reduction
+// Solve X @ W ≈ T by minimizing mean squared error
+
+fn main() {
+    // Data: X (2x2), target T (2x1); solution is W* = [[1],[2]]
+    let X = tensor [[1.0, 2.0], [3.0, 4.0]];
+    let T = tensor [[5.0], [11.0]];
+
+    // Learnable weights W (2x1)
+    learn W = tensor [[0.1], [0.1]];
+
+    optimize(W) until loss < 0.00000001 {
+        let Y = matmul(X, W);          // (2x2) @ (2x1) -> (2x1)
+        let E = Y - T;                 // (2x1)
+        let loss = mean(E * E);        // scalar
+        minimize loss;
+    }
+
+    // Return average prediction
+    let Yf = matmul(X, W);
+    let out = mean(Yf);
+    return out;
+}

@@ -1,0 +1,138 @@
+{
+  "Main Function": {
+    "prefix": "fn main",
+    "body": [
+      "fn main() {",
+      "    $0",
+      "    return ${1:result};",
+      "}"
+    ],
+    "description": "Create a main function"
+  },
+  "Function": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:params}) {",
+      "    $0",
+      "}"
+    ],
+    "description": "Create a function"
+  },
+  "Let Variable": {
+    "prefix": "let",
+    "body": "let ${1:name} = ${2:value};",
+    "description": "Declare an immutable variable"
+  },
+  "Learn Variable": {
+    "prefix": "learn",
+    "body": "learn ${1:name} = ${2:0.0};",
+    "description": "Declare a learnable parameter"
+  },
+  "Optimize Loop": {
+    "prefix": "optimize",
+    "body": [
+      "optimize(${1:variable}) until ${2:loss} < ${3:0.001} {",
+      "    let ${2:loss} = ${4:expression};",
+      "    minimize ${2:loss};",
+      "}"
+    ],
+    "description": "Create an optimization loop"
+  },
+  "Tensor 1D": {
+    "prefix": "tensor1d",
+    "body": "let ${1:v} = tensor [${2:1.0, 2.0, 3.0}];",
+    "description": "Create a 1D tensor"
+  },
+  "Tensor 2D": {
+    "prefix": "tensor2d",
+    "body": [
+      "let ${1:m} = tensor [",
+      "    [${2:1.0, 0.0}],",
+      "    [${3:0.0, 1.0}]",
+      "];"
+    ],
+    "description": "Create a 2D tensor (matrix)"
+  },
+  "Matrix Multiply": {
+    "prefix": "matmul",
+    "body": "let ${1:result} = matmul(${2:A}, ${3:B});",
+    "description": "Matrix multiplication"
+  },
+  "Mean Squared Error": {
+    "prefix": "mse",
+    "body": [
+      "let ${1:E} = ${2:Y} - ${3:T};",
+      "let ${4:loss} = mean(${1:E} * ${1:E});"
+    ],
+    "description": "Mean squared error loss"
+  },
+  "Hyperparameters": {
+    "prefix": "hyper",
+    "body": [
+      "let learning_rate = ${1:0.01};",
+      "let max_iterations = ${2:10000};"
+    ],
+    "description": "Set hyperparameters"
+  },
+  "Linear Regression": {
+    "prefix": "linreg",
+    "body": [
+      "// Linear regression: Y = X @ W",
+      "let X = tensor [",
+      "    [${1:1.0, 1.0}],",
+      "    [${2:2.0, 1.0}]",
+      "];",
+      "",
+      "let T = tensor [",
+      "    [${3:1.0}],",
+      "    [${4:2.0}]",
+      "];",
+      "",
+      "learn W = tensor [[0.0], [0.0]];",
+      "",
+      "let learning_rate = 0.01;",
+      "let max_iterations = 10000;",
+      "",
+      "optimize(W) until loss < 0.001 {",
+      "    let Y = matmul(X, W);",
+      "    let E = Y - T;",
+      "    let loss = mean(E * E);",
+      "    minimize loss;",
+      "}",
+      "",
+      "print(loss);",
+      "return W;"
+    ],
+    "description": "Full linear regression template"
+  },
+  "Sigmoid": {
+    "prefix": "sigmoid",
+    "body": "let ${1:a} = sigmoid(${2:x});",
+    "description": "Apply sigmoid activation"
+  },
+  "ReLU": {
+    "prefix": "relu",
+    "body": "let ${1:a} = relu(${2:x});",
+    "description": "Apply ReLU activation"
+  },
+  "Print": {
+    "prefix": "print",
+    "body": "print(${1:value});",
+    "description": "Print a value"
+  },
+  "Sum": {
+    "prefix": "sum",
+    "body": "let ${1:s} = sum(${2:tensor});",
+    "description": "Sum all elements of a tensor"
+  },
+  "Mean": {
+    "prefix": "mean",
+    "body": "let ${1:m} = mean(${2:tensor});",
+    "description": "Mean of all elements of a tensor"
+  },
+  "Dot Product": {
+    "prefix": "dot",
+    "body": "let ${1:d} = dot(${2:a}, ${3:b});",
+    "description": "Dot product of two vectors"
+  }
+}
