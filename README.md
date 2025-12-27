@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="NOMA_logo.png" alt="NOMA Logo" width="200"/>
+</p>
+
 # NOMA
 
 **Neural-Oriented Machine Architecture**  
@@ -7,8 +11,9 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![Built with Rust](https://img.shields.io/badge/language-Rust-red)](https://www.rust-lang.org/)
 [![Docs](https://img.shields.io/badge/docs-language_guide-orange)](LANGUAGE_GUIDE.md)
+[![Discord](https://img.shields.io/badge/Discord-Join%20us-7289DA?logo=discord&logoColor=white)](https://discord.gg/GCYvkJWsPf)
 
-**[Quick Start](QUICKSTART.md) | [Language Guide](LANGUAGE_GUIDE.md) | [Contributing](CONTRIBUTING.md)**
+**[Quick Start](QUICKSTART.md) | [Language Guide](LANGUAGE_GUIDE.md) | [Contributing](CONTRIBUTING.md) | [Discord](https://discord.gg/GCYvkJWsPf)**
 
 
 

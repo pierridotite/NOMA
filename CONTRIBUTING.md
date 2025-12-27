@@ -24,6 +24,16 @@ Be respectful, constructive, and collaborative. We welcome contributors of all s
 
 ---
 
+## Community
+
+Join our Discord community to discuss the project, ask questions, and connect with other contributors:
+
+[![Discord](https://img.shields.io/badge/Discord-Join%20us-7289DA?logo=discord&logoColor=white)](https://discord.gg/GCYvkJWsPf)
+
+**[Join the NOMA Discord](https://discord.gg/GCYvkJWsPf)**
+
+---
+
 ## Getting Started
 
 1. **Fork the repository** on GitHub
