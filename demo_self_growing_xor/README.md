@@ -167,14 +167,6 @@ Run the benchmark to generate `comparison.png` and `summary.json`.
 
 **Note**: C++ and NumPy curves overlap perfectly (identical algorithms and initial weights). C++ is shown with a dashed line to make it visible.
 
-Expected ranking (faster to slower):
-1. NOMA compiled
-2. C++ manual
-3. PyTorch compile
-4. PyTorch eager
-5. NumPy manual
-6. NOMA interpreted
-
 ## File Structure
 
 ```
@@ -213,12 +205,3 @@ demo_self_growing_xor/
 ## License
 
 MIT
-
----
-
-## Key Findings
-
-1. **Performance**: NOMA compiled is **42x faster** than NumPy and **37x faster** than C++
-2. **Compile time**: NOMA compiles **6.7x faster** than C++ (212ms vs 1424ms)
-3. **Correctness**: All implementations converge to the same final loss (~0.002)
-4. **Simplicity**: NOMA requires no manual gradient implementation
