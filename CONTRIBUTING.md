@@ -27,7 +27,7 @@ Be respectful, constructive, and collaborative. We welcome contributors of all s
 ## Getting Started
 
 1. **Fork the repository** on GitHub
-2. **Clone your fork**: `git clone https://github.com/YOUR_USERNAME/Noma.git`
+2. **Clone your fork**: `git clone https://github.com/pierridotite/Noma.git`
 3. **Create a branch**: `git checkout -b feature/your-feature-name`
 4. **Make your changes** (see development setup below)
 5. **Test your changes**: `cargo test && cargo run -- run examples/01_hello.noma`
@@ -353,7 +353,7 @@ Reviews usually take 2-7 days. Feel free to ping maintainers if it's been longer
 
 - **GitHub Issues**: For bugs and feature requests
 - **GitHub Discussions**: For general questions
-- **Email**: [maintainer@noma-lang.org] (if applicable)
+- **Email**: [praffalli1@gmail.com]
 
 ---
 
