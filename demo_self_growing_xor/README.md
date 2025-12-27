@@ -163,7 +163,7 @@ Run the benchmark to generate `comparison.png` and `summary.json`.
 
 ### Training Convergence
 
-![Loss Curves](assets/loss.png)
+![Loss Curves](assets/loss.png) 
 
 **Note**: C++ and NumPy curves overlap perfectly (identical algorithms and initial weights). C++ is shown with a dashed line to make it visible.
 
