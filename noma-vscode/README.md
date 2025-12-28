@@ -4,10 +4,10 @@ Syntax highlighting, snippets, and language support for the NOMA programming lan
 
 ## Features
 
-- **Syntax Highlighting** — Full TextMate grammar for `.noma` files
-- **Snippets** — Quick templates for common patterns
-- **Auto-closing** — Brackets, braces, parentheses, and strings
-- **Indentation** — Smart indent/outdent for blocks
+- **Syntax Highlighting** - Full TextMate grammar for `.noma` files
+- **Snippets** - Quick templates for common patterns
+- **Auto-closing** - Brackets, braces, parentheses, and strings
+- **Indentation** - Smart indent/outdent for blocks
 
 ## Installation
 
@@ -56,13 +56,13 @@ Then install the `.vsix` file via VS Code: Extensions → ... → Install from V
 
 The extension provides highlighting for:
 
-- **Keywords** — `fn`, `let`, `learn`, `return`, `optimize`, `until`, `minimize`, `if`, `else`, `while`, `for`
-- **Types** — `tensor`
-- **Built-ins** — `sigmoid`, `relu`, `sum`, `mean`, `dot`, `matmul`, `print`, `exp`, `log`, `sqrt`, `abs`, `sin`, `cos`, `tan`
-- **Operators** — Arithmetic, comparison, logical, assignment
-- **Numbers** — Integers and floats (including scientific notation)
-- **Comments** — Line (`//`) and block (`/* */`)
-- **Strings** — Double-quoted with escape sequences
+- **Keywords** - `fn`, `let`, `learn`, `return`, `optimize`, `until`, `minimize`, `if`, `else`, `while`, `for`
+- **Types** - `tensor`
+- **Built-ins** - `sigmoid`, `relu`, `sum`, `mean`, `dot`, `matmul`, `print`, `exp`, `log`, `sqrt`, `abs`, `sin`, `cos`, `tan`
+- **Operators** - Arithmetic, comparison, logical, assignment
+- **Numbers** - Integers and floats (including scientific notation)
+- **Comments** - Line (`//`) and block (`/* */`)
+- **Strings** - Double-quoted with escape sequences
 
 ## Example
 

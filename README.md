@@ -4,8 +4,9 @@
 
 # NOMA
 
-**Neural-Oriented Machine Architecture**  
-*The first systems programming language with native, compile-time automatic differentiation*
+**Neural-Oriented Machine Architecture**
+
+A systems programming language where automatic differentiation is a compiler pass and model parameters are explicit, growable memory.
 
 [![Stage](https://img.shields.io/badge/stage-alpha-green)](https://github.com/pierridotite/Noma)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -15,69 +16,158 @@
 
 **[Quick Start](QUICKSTART.md) | [Language Guide](LANGUAGE_GUIDE.md) | [Contributing](CONTRIBUTING.md) | [Discord](https://discord.gg/GCYvkJWsPf)**
 
+---
 
+## TL;DR
+
+NOMA is an experimental systems language for machine learning where:
+
+- Reverse-mode autodiff is implemented as a compiler pass (LLVM IR)
+- Training loops are first-class language constructs
+- Model parameters are explicit memory buffers that can grow during training
+- Compiled programs produce small, standalone native binaries
+
+The project explores whether treating training and topology changes as language semantics (instead of library behavior) enables new guarantees and workflows.
 
 ---
 
-## What Makes NOMA Different?
+## Motivation
 
-![Architecture Comparison](docs/architecture_comparison.svg)
+In mainstream ML frameworks, model structure and training state live inside framework-managed objects. Changing topology during training typically requires rebuilding graphs, copying parameters, and resetting optimizer state.
 
-> **TL;DR:** PyTorch computes gradients at runtime (slow). NOMA computes them at compile-time (fast).
-
-**Gradients are computed by the compiler, not a library.**
-
-Most ML frameworks (PyTorch, TensorFlow) implement autodiff as a *runtime library*. NOMA implements it as a *compiler pass* - just like type checking or optimization. Your gradients are native code, not interpreter overhead.
-
-```noma
-fn main() {
-    learn x = 5.0;
-    
-    optimize(x) until loss < 0.0001 {
-        let loss = x * x;
-        minimize loss;
-    }
-    
-    return x;  // Compiler automatically computed gradients
-}
-```
-
-**Result:** Standalone 16KB binary with zero dependencies. No Python. No PyTorch. No CUDA toolkit required for CPU.
+NOMA explores an alternative design: treating learnable parameters as managed memory, and optimization as a language-level construct. This makes topology changes (growth, pruning, resizing) explicit and mechanically well-defined.
 
 ---
 
-## The "Wow" Feature: Dynamic Topology Growth
+## What is Different
 
-![Dynamic Topology Growth](docs/dynamic_topology.svg)
+NOMA is not "faster Python" and does not compete directly with PyTorch or JAX. Its focus is on semantics and guarantees.
 
-Networks can grow *during training* without restarting—**and the optimizer state is preserved**:
+[![](https://mermaid.ink/img/pako:eNqdVW1vmzAQ_iuWp3xzqvIWEqZNggSqSm03pdU-rMkHF5xgDTAyZk1W5b_vzEtC2lXTZiUI-5577vz4zrzgWCQMe3g0euEFVx56WRUIrbBKWc5W2IPXJ1rBGxmsf6OS06eMVRrQOGjTRhQqojnP9q3fdaGYJKjm44oW1bhikm8IqvaVYvm45gT5wJJ1zD3BPf_VhTXscjcwlpLnVO7nIhOyBXzYNOMt5oHt1BBnGMbUdN_iAiETJofIhbFwFsEAmfGCDQGTwDWnlwMAbFHxV3lFs8iPgEVjDp1um0w8xymVqpEMFuJa_jwJzEFKdFgVh8NotCpWxRGObpaaYDRCn_48OuuDpAlXXBQ0Q5GkOXsW8kf1d9eqftpKWqZDgscVfocOr9t9J1yyWJu79BDyDfB6vF_O1-jrXqVgmUNhgQMajz8j39TW5cP6RIaWdaG4rrGO0zdbqKWh18s1umrymouiUrJuop2wVou1NdZfrHsy5NdKJFwXRY-0W6SjkVdLjb3Se2OFAuq8rBUdMLMi0eq_Ea1buvty6yO_LKWgcfoO7CioBkPQc5_3BQxOAjYu96KW8VHAoBEwCtdN0jxjEpSEdtEJ95xBK2Bg9aL0YqCvtDqdXdBqF9i9zjc3327R9fIEaCULGsmC6ztICDT6yVDAC6j0P0h1r_bQKFs9izOItWAbFFOZoA3PMu9D1AwCxyh-MK9rsm46fuaJSj2j3BG584xLIvf6Get28rrO_XhGnPJtmsFfBfQYIAzN0DwGCCMbxqsAF85_hLgSoo-xmEfz0D3GMM2544T_GuMYBfqF-CbxLeI7JDBIYJLAJoHTyPZxALPP9juwwDGepdmxV3AU7Ow26CRq7qSTRE7ohu-cgd0kb5_Ymnr8fxpM8FbyBHvQxozgnMmc6il--6lJ2IbWmdJX5wHcSlp8FyLvPaWotyn2NjSrYFaXCVVswSm0W35clVCX-k6H-wBDdLchwd4L3mHPtS5mM9ecTOypYVnu1CF4D6DZ5cXEMBzbmsDPmdrmgeBfTdjLi-lsatiOaznmxJqaUFSYgbBC3rZfzebjefgNxNY79w?type=png)](https://mermaid.live/edit#pako:eNqdVW1vmzAQ_iuWp3xzqvIWEqZNggSqSm03pdU-rMkHF5xgDTAyZk1W5b_vzEtC2lXTZiUI-5577vz4zrzgWCQMe3g0euEFVx56WRUIrbBKWc5W2IPXJ1rBGxmsf6OS06eMVRrQOGjTRhQqojnP9q3fdaGYJKjm44oW1bhikm8IqvaVYvm45gT5wJJ1zD3BPf_VhTXscjcwlpLnVO7nIhOyBXzYNOMt5oHt1BBnGMbUdN_iAiETJofIhbFwFsEAmfGCDQGTwDWnlwMAbFHxV3lFs8iPgEVjDp1um0w8xymVqpEMFuJa_jwJzEFKdFgVh8NotCpWxRGObpaaYDRCn_48OuuDpAlXXBQ0Q5GkOXsW8kf1d9eqftpKWqZDgscVfocOr9t9J1yyWJu79BDyDfB6vF_O1-jrXqVgmUNhgQMajz8j39TW5cP6RIaWdaG4rrGO0zdbqKWh18s1umrymouiUrJuop2wVou1NdZfrHsy5NdKJFwXRY-0W6SjkVdLjb3Se2OFAuq8rBUdMLMi0eq_Ea1buvty6yO_LKWgcfoO7CioBkPQc5_3BQxOAjYu96KW8VHAoBEwCtdN0jxjEpSEdtEJ95xBK2Bg9aL0YqCvtDqdXdBqF9i9zjc3327R9fIEaCULGsmC6ztICDT6yVDAC6j0P0h1r_bQKFs9izOItWAbFFOZoA3PMu9D1AwCxyh-MK9rsm46fuaJSj2j3BG584xLIvf6Get28rrO_XhGnPJtmsFfBfQYIAzN0DwGCCMbxqsAF85_hLgSoo-xmEfz0D3GMM2544T_GuMYBfqF-CbxLeI7JDBIYJLAJoHTyPZxALPP9juwwDGepdmxV3AU7Ow26CRq7qSTRE7ohu-cgd0kb5_Ymnr8fxpM8FbyBHvQxozgnMmc6il--6lJ2IbWmdJX5wHcSlp8FyLvPaWotyn2NjSrYFaXCVVswSm0W35clVCX-k6H-wBDdLchwd4L3mHPtS5mM9ecTOypYVnu1CF4D6DZ5cXEMBzbmsDPmdrmgeBfTdjLi-lsatiOaznmxJqaUFSYgbBC3rZfzebjefgNxNY79w)
+
+**Key differences:**
+
+| Aspect | Traditional Frameworks | NOMA |
+|--------|----------------------|------|
+| Autodiff | Runtime library | Compiler pass |
+| Training loops | Library API | Language construct (`optimize { }`) |
+| Parameters | Framework objects | Explicit memory buffers (`alloc`/`realloc`/`free`) |
+| Optimizer state | Hidden in optimizer | Tracked, preserved across topology changes |
+| Output | Requires runtime | Standalone binary |
+
+---
+
+## Dynamic Topology Growth
+
+NOMA allows parameter buffers to be resized during training using `realloc`. Existing values are preserved, new slots are initialized, and optimizer state for existing parameters is retained.
+
+This enables experiments where model capacity adapts online, without restarting training or reconstructing optimizer state.
 
 ```noma
 fn main() {
-    learn W = tensor [[0.1], [0.2]];  // Start with 2 neurons
+    learn W = tensor [[0.1], [0.2]];  // Start small
     
     optimize(W) until loss < 0.01 {
         let pred = matmul(X, W);
         let loss = mean((pred - Y) * (pred - Y));
         
-        // Network struggling? Grow it instantly
         if loss > 0.5 {
-            realloc W = [10, 1];  // Now 10 neurons, training continues
+            realloc W = [10, 1];  // Grow network, training continues
         }
         
         minimize loss;
     }
     
-    return W;  // Final shape determined at runtime
+    return W;
 }
 ```
 
-**Why this matters:** When you `realloc` a tensor, NOMA:
-1. Preserves existing weights (no retraining from scratch)
-2. Initializes new neurons with random values (breaks symmetry)
-3. **Keeps Adam/RMSprop momentum** for existing parameters
+[![](https://mermaid.ink/img/pako:eNqlVO1u2jAUfRXLFf8Cw_kieFslGEGqtnXVWg1phB8mccBqEke200Ipz7EH2ovN-YBmRe2mLULEH-eee-71iXcw5BGFGHY6O5YxhcEuyAAIoFrTlAYQ6-GSSD0yWuvfiGBkmVBZAqqAcivmmZqSlCXbOu4iU1QYoGBdSTLZlVSw2AByKxVNuwUzwEizJA3zgeCaPTRpkZ1vWpu5YCkR2w884aIGnMXVc4q5oRvVxiGEPHNwihtzEVHRRk7QxJmMW8iEZbQNcMcD0-u3ALpExZ7pmg6no6lmKTH7pm9xwu_DNRGqapleCAtx99RgplsJ9kG233c6QRZkRzj49LUkkMVyJUi-BmMac0HnAawHQFCSJDwM4KJWFDFBQ8V41gQCMEMaPZ8twIyy1VpJDObmzx9o8W4p3pzPv1zdLMAoIimQiiiKQWqAu4aNZlGppZV9FOt6NV31_pvc5klu1H9K_tH3rxbA3zCpWLbCIBdUu-SORvX2xeWFFndJ74FMeBlcOlRbRlskekG9PnmtmkbPK2i61e2ePwaw0Y3BDLwvBRloEcDHurga3umAa7XVh78qZ2FCpJzQGIRERCBmSYLPptVjSCX4LcWNcZpp955Fao1RvjHEBmt-sS3_w9IiuHHj29-I15RoJx6oK_scqX3HH_gvUNsVtf0aNalPpKb2_anZUu1arjtFz6h7zh90H-m1tYyZWXWlyil1y-ih1f9ayxNRbbL_4dEHeHtdcfXBazWb-UYXAA24EiyCWImCGjClIiXlFJ5eiRGNSZGo8hPf67CcZN85Tw-RgherNcQxSaSeFXmkrTlhRH9C6XFVlDbVd0-RKYiRa1UkEO_gBuKB1RsOB6br2h6yrIHnGHCrQcN-z0XIsS1X_xzPNvcGfKjS9nve0EO2M7Ac07U807YNSCOmuPhc3-7VJb__BYHQ4i0?type=png)](https://mermaid.live/edit#pako:eNqlVO1u2jAUfRXLFf8Cw_kieFslGEGqtnXVWg1phB8mccBqEke200Ipz7EH2ovN-YBmRe2mLULEH-eee-71iXcw5BGFGHY6O5YxhcEuyAAIoFrTlAYQ6-GSSD0yWuvfiGBkmVBZAqqAcivmmZqSlCXbOu4iU1QYoGBdSTLZlVSw2AByKxVNuwUzwEizJA3zgeCaPTRpkZ1vWpu5YCkR2w884aIGnMXVc4q5oRvVxiGEPHNwihtzEVHRRk7QxJmMW8iEZbQNcMcD0-u3ALpExZ7pmg6no6lmKTH7pm9xwu_DNRGqapleCAtx99RgplsJ9kG233c6QRZkRzj49LUkkMVyJUi-BmMac0HnAawHQFCSJDwM4KJWFDFBQ8V41gQCMEMaPZ8twIyy1VpJDObmzx9o8W4p3pzPv1zdLMAoIimQiiiKQWqAu4aNZlGppZV9FOt6NV31_pvc5klu1H9K_tH3rxbA3zCpWLbCIBdUu-SORvX2xeWFFndJ74FMeBlcOlRbRlskekG9PnmtmkbPK2i61e2ePwaw0Y3BDLwvBRloEcDHurga3umAa7XVh78qZ2FCpJzQGIRERCBmSYLPptVjSCX4LcWNcZpp955Fao1RvjHEBmt-sS3_w9IiuHHj29-I15RoJx6oK_scqX3HH_gvUNsVtf0aNalPpKb2_anZUu1arjtFz6h7zh90H-m1tYyZWXWlyil1y-ih1f9ayxNRbbL_4dEHeHtdcfXBazWb-UYXAA24EiyCWImCGjClIiXlFJ5eiRGNSZGo8hPf67CcZN85Tw-RgherNcQxSaSeFXmkrTlhRH9C6XFVlDbVd0-RKYiRa1UkEO_gBuKB1RsOB6br2h6yrIHnGHCrQcN-z0XIsS1X_xzPNvcGfKjS9nve0EO2M7Ac07U807YNSCOmuPhc3-7VJb__BYHQ4i0)
 
-This means post-growth convergence is **2× faster** than restarting the optimizer. Try doing that in PyTorch without stopping training and rebuilding everything.
+**What happens during `realloc`:**
+1. Existing weights are preserved
+2. New neurons are initialized (Xavier/He)
+3. Optimizer momentum (Adam/RMSprop) is retained for existing parameters
+
+---
+
+## Project Status
+
+**NOMA is alpha software.**
+
+### What Works Today
+
+- Lexer, parser, AST construction
+- Computational graph with reverse-mode autodiff
+- LLVM IR codegen with tensor support (matmul, sigmoid, relu, tanh, sum, mean)
+- Native compilation via `build-exe`
+- Multiple optimizers (SGD, Adam, RMSprop)
+- Dynamic memory allocation (`alloc`/`realloc`/`free`)
+- User-defined functions with autodiff support
+- Batch processing, file I/O (CSV, Safetensors)
+
+### Known Limitations
+
+| Limitation | Description |
+|------------|-------------|
+| Single data type | Only `f64` (no int, bool, string) |
+| No module system | Single-file programs only |
+| Control flow | Compile-time evaluation (loops unroll the graph) |
+| No recursion | Functions are inlined |
+| No debugging | No breakpoints or source maps |
+| Training timing | Training occurs during compilation; final weights are embedded |
+
+---
+
+## Experimental Results
+
+We include a small, fully reproducible benchmark on a self-growing XOR network. This is a toy problem intended to validate semantics, not to claim real-world performance.
+
+### Setup
+
+- Task: XOR classification with dynamic network growth
+- Architecture: 2→hidden→1, hidden layer grows from 4 to 8 neurons at step 200
+- Optimizer: Adam (lr=0.1, β1=0.9, β2=0.999)
+- Training: 200 iterations before growth + 120 after
+
+### Results
+
+| Implementation | Execution Time | Final Loss |
+|----------------|----------------|------------|
+| NOMA (compiled) | 0.8 ms | 0.0004 |
+| C++ (manual gradients) | 0.8 ms | 0.0020 |
+| Python + NumPy | 29 ms | 0.0020 |
+| NOMA (interpreted) | 99 ms | 0.0007 |
+
+### Observations
+
+1. Compiled NOMA matches hand-written C++ execution time
+2. NOMA achieves lower final loss because optimizer state is preserved across `realloc`
+3. Baselines reset optimizer state after growth, requiring more iterations to reconverge
+
+| Mode | Final Loss | Note |
+|------|------------|------|
+| NOMA (preserve state) | 0.0007 | Momentum preserved across growth |
+| NOMA (reset state) | 0.0014 | State explicitly reset |
+| NumPy / C++ | 0.0020 | State reset by reconstruction |
+
+### Loss Curve
+
+<p align="center">
+  <img src="demo_self_growing_xor/assets/loss.png" alt="Loss curve comparison" width="600"/>
+</p>
+
+The vertical dashed line marks the `realloc` point (step 200). NOMA with preserved optimizer state shows faster reconvergence after growth compared to implementations that reset state.
+
+**Reproducing:** See [demo_self_growing_xor/](demo_self_growing_xor/) for full benchmark code and scripts.
+
+---
+
+## Architecture Overview
+
+[![](https://mermaid.ink/img/pako:eNqtVmtv2zYU_SsECwMbRruWbPmhbgVsy8qMOg84QVGs9gdGomwiEmVQVGsn8H77LinJj-bVbRGQRJc8PPfce6QbPeAgDRl2ca32wAVXLnqYC4TmWK1YwubYhdtbmsEdOVr_TCWntzHLNMAc0FtRKpRPEx5vi3MToZgkKOf1jIqsnjHJI4KybaZYUs85QQNgiUvmiuCa35dprfZ6c7S5ljyhcjtK41QWgHeRuR5jbthGHeMsy-rZ3ce4YSpDJo-RnuU53vAIGXPBjgGdYdfuNY8AUKLiP-jy-_7ABxaN2ZV9i-L0e7CiUpmWwUKQy2-HBnNoJdrNxW5Xq83FXOzhaDrTBLUa-qO6yngi1rl6ai_Lb5eSrlcF4qs2QiPxotAccskCxVNRUiN0PRsB6iv8WaCGSBOKsjSXASuPMBFqSU-K8CV4ZgAv6KhAkGSPf17NdPxFq_HHCzRlGwZNXaB6_SO6Gsyq9Ssqs8PG4PpGb0xmC337kuhK9TkPw5jVn9B9KrzAAfnRgeeFn80GV39WSkZpAk2nGkBjdKbp9no9DRp4IDdXacijCArKst9v5fuPv4xWlAs0y2P260-0f0iDu9e6X2IgZ4V-offTz-da3FA3H-7RZIbOmGDSFFIVcHl1cwK6XCue8PsTzHRy8akCjWIqlug3NOXiztj2WlmXuXrt2S4gkKHEPl_TcHJhhEwuFugCNH5jaMgFvLJFw_-2OujT8Klm-_AOIhrINMtQpugSxp0wL0tR4PiLDuGJM6Ex3yx4xTY0Roe6D2YB8u-Zr9UWBstSR0EM1nssQgGVIYp4HLvvfHORTMn0jrnlUCrD-nceqpVrrTdEblyrSeRW_w70-HHLSffhhNhIr5jNZNozj51xd_wMc9swt19iXvHlKoYfdZamlXZv5I_G3X0G2x45zviHDA3n59Xvc4DPZYpxy7d975DC6nf81r9NsU-iDSVgJoH5QsBNYpwk2j8CDzoxBmpzDrq0xye1H22BzSeay1QZOM6KgfyfrTjwVFP0DaiKyfYGROVweQOm4o3-H0SY4KXkIXaVzBnBCZMJ1SF-_G0TsojmsdL_q3dwbE3FX2maVCdlmi9X2I1onEGUr0OqmMcpTKBkvyqhaP0RkQuF3ZZtGRLsPuANhE6j3--2mm3L7jn9vtMjeItdu9lsdCzL6bS6vbbd7vV3BN-brM1Gr9-z2k635didVs9uOwSzkKtUnhdfaeZjbfcPyrQA_w?type=png)](https://mermaid.live/edit#pako:eNqtVmtv2zYU_SsECwMbRruWbPmhbgVsy8qMOg84QVGs9gdGomwiEmVQVGsn8H77LinJj-bVbRGQRJc8PPfce6QbPeAgDRl2ca32wAVXLnqYC4TmWK1YwubYhdtbmsEdOVr_TCWntzHLNMAc0FtRKpRPEx5vi3MToZgkKOf1jIqsnjHJI4KybaZYUs85QQNgiUvmiuCa35dprfZ6c7S5ljyhcjtK41QWgHeRuR5jbthGHeMsy-rZ3ce4YSpDJo-RnuU53vAIGXPBjgGdYdfuNY8AUKLiP-jy-_7ABxaN2ZV9i-L0e7CiUpmWwUKQy2-HBnNoJdrNxW5Xq83FXOzhaDrTBLUa-qO6yngi1rl6ai_Lb5eSrlcF4qs2QiPxotAccskCxVNRUiN0PRsB6iv8WaCGSBOKsjSXASuPMBFqSU-K8CV4ZgAv6KhAkGSPf17NdPxFq_HHCzRlGwZNXaB6_SO6Gsyq9Ssqs8PG4PpGb0xmC337kuhK9TkPw5jVn9B9KrzAAfnRgeeFn80GV39WSkZpAk2nGkBjdKbp9no9DRp4IDdXacijCArKst9v5fuPv4xWlAs0y2P260-0f0iDu9e6X2IgZ4V-offTz-da3FA3H-7RZIbOmGDSFFIVcHl1cwK6XCue8PsTzHRy8akCjWIqlug3NOXiztj2WlmXuXrt2S4gkKHEPl_TcHJhhEwuFugCNH5jaMgFvLJFw_-2OujT8Klm-_AOIhrINMtQpugSxp0wL0tR4PiLDuGJM6Ex3yx4xTY0Roe6D2YB8u-Zr9UWBstSR0EM1nssQgGVIYp4HLvvfHORTMn0jrnlUCrD-nceqpVrrTdEblyrSeRW_w70-HHLSffhhNhIr5jNZNozj51xd_wMc9swt19iXvHlKoYfdZamlXZv5I_G3X0G2x45zviHDA3n59Xvc4DPZYpxy7d975DC6nf81r9NsU-iDSVgJoH5QsBNYpwk2j8CDzoxBmpzDrq0xye1H22BzSeay1QZOM6KgfyfrTjwVFP0DaiKyfYGROVweQOm4o3-H0SY4KXkIXaVzBnBCZMJ1SF-_G0TsojmsdL_q3dwbE3FX2maVCdlmi9X2I1onEGUr0OqmMcpTKBkvyqhaP0RkQuF3ZZtGRLsPuANhE6j3--2mm3L7jn9vtMjeItdu9lsdCzL6bS6vbbd7vV3BN-brM1Gr9-z2k635didVs9uOwSzkKtUnhdfaeZjbfcPyrQA_w)
+
+**Key insight:** Autodiff happens during compilation. Gradients are native machine instructions, not runtime library calls.
 
 ---
 
@@ -89,130 +179,54 @@ git clone https://github.com/pierridotite/Noma.git
 cd Noma
 cargo build --release
 
-# Run immediately (no compilation needed)
+# Run in interpreter mode
 cargo run -- run examples/03_gradient_descent.noma
 
-# Or compile to standalone binary
+# Compile to standalone binary
 cargo run -- build-exe examples/12_linear_regression.noma -o model
 ./model
 ```
 
----
+### Execution Modes
 
-## Benchmark: NOMA vs Python
-
-### Simple Gradient Descent (solving `5w = 25`)
-
-| Metric | NOMA | Python + Manual Gradients |
-|--------|------|---------------------------|
-| **Execution Time** | 0.001s | 0.016s |
-| **Speedup** | **16x** | baseline |
-| **Binary Size** | 16 KB | ~100 MB runtime |
-| **Dependencies** | 0 | numpy, interpreter |
-| **Gradients** | Automatic (compiler) | Manual (error-prone) |
-
-### Self-Growing XOR Network (dynamic reallocation)
-
-| Implementation | Time | Final Loss | Speedup |
-|----------------|------|------------|----------|
-| NOMA compiled | 0.8ms | 0.0004 | **35×** |
-| C++ manual | 0.8ms | 0.0020 | 35× |
-| NumPy | 29ms | 0.0020 | baseline |
-| NOMA interpreted | 99ms | 0.0007 | 0.3× |
-
-**Key insight:** NOMA achieves **3× lower final loss** than NumPy/C++ because it preserves optimizer momentum across `realloc`. The baselines restart from zero after growth.
-
-| Mode | Final Loss | Effect |
-|------|------------|--------|
-| NOMA (preserve state) | 0.0007 | **Momentum preserved** |
-| NOMA (reset state) | 0.0014 | 2× worse |
-| NumPy / C++ | 0.0020 | 3× worse |
+| Mode | Command | Use Case |
+|------|---------|----------|
+| Interpreter | `run` | Development, debugging |
+| JIT | `fast-run` | Quick testing |
+| Compile | `build-exe` | Production deployment |
 
 ---
 
-## How It Works
-
-![Compilation Flow](docs/compilation_flow.svg)
-
-NOMA performs automatic differentiation during compilation, not at runtime. When you write `minimize loss;`, the compiler:
-
-1. **Builds a computational graph** of your forward pass
-2. **Applies the chain rule** to generate backward pass code
-3. **Lowers to LLVM IR** with gradients as native instructions
-4. **Produces a standalone binary** with zero dependencies
-
-The result: gradients are **native machine code**, not library calls.
-
----
-
-## Key Features
-
-### Native Autodiff
-- Reverse-mode automatic differentiation as a compiler pass
-- Gradients computed at compile-time, executed as native code
-- Chain rule applied during LLVM IR generation
-
-### Zero Dependencies
-- No Python runtime
-- No PyTorch/TensorFlow
-- No CUDA toolkit for CPU execution
-- Standalone binaries: 16-50 KB typical size
-
-### Multiple Optimizers
-- **SGD**: Classic gradient descent
-- **Adam**: Adaptive moments (beta1, beta2, epsilon)
-- **RMSprop**: Root mean square propagation
-- **State preservation**: Momentum survives `realloc` for faster post-growth convergence
-- **`reset_optimizer()`**: Explicitly reset state when needed
-
-### Production Features
-- Dynamic memory allocation (`alloc`, `realloc`, `free`)
-- Batch processing for mini-batch SGD
-- File I/O (CSV, Safetensors format)
-- User-defined functions with full autodiff support
-- Random initialization (Xavier, He methods)
-
-### Systems-Level Performance
-- Compiles to LLVM IR → native code
-- **Full tensor support in LLVM codegen** (matmul, sigmoid, sum, mean)
-- Deterministic memory model (no GC)
-- Optional fast-math optimizations
-- Experimental GPU support (PTX/CUDA)
-
----
-
-## Language Highlights
+## Language Overview
 
 ```noma
-// Variables
-let x = 5.0;        // Immutable constant
-learn w = 0.1;      // Learnable (gradients computed automatically)
+// Constants and learnable parameters
+let x = 5.0;
+learn w = 0.1;  // Gradients computed automatically
 
-// User functions work with autodiff
+// User functions (autodiff-compatible)
 fn mse(pred, target) {
     let error = pred - target;
     return mean(error * error);
 }
 
-// Tensors and linear algebra
+// Tensors
 let X = tensor [[1.0, 2.0], [3.0, 4.0]];
 let W = tensor [[0.5], [0.3]];
 let Y = matmul(X, W);
 
-// Batch processing
-batch x_batch in dataset with 32.0 {
-    let pred = matmul(x_batch, W);
+// Training loop
+optimize(W) with adam(0.01) until loss < 0.001 {
+    let pred = matmul(X, W);
+    let loss = mse(pred, target);
+    minimize loss;
 }
-
-// File I/O
-load_csv data = "train.csv";
-save_safetensors { model: W }, "trained.safetensors";
 
 // Dynamic allocation
 alloc buffer = [rows, cols];
-realloc buffer = [new_rows, cols];  // Resize during training (preserves optimizer state)
+realloc buffer = [new_rows, cols];  // Preserves optimizer state
 free buffer;
-reset_optimizer();  // Explicitly clear Adam/RMSprop momentum if needed
+reset_optimizer();  // Explicitly clear momentum if needed
 ```
 
 **[→ Full Language Guide](LANGUAGE_GUIDE.md)**
@@ -223,123 +237,75 @@ reset_optimizer();  // Explicitly clear Adam/RMSprop momentum if needed
 
 | Example | Description |
 |---------|-------------|
-| [01_hello.noma](examples/01_hello.noma) | Basic arithmetic |
 | [03_gradient_descent.noma](examples/03_gradient_descent.noma) | Minimize x² |
 | [06_neural_network.noma](examples/06_neural_network.noma) | 2-layer perceptron |
 | [12_linear_regression.noma](examples/12_linear_regression.noma) | Full ML pipeline |
 | [20_growing_network.noma](examples/20_growing_network.noma) | Dynamic topology growth |
 | [22_adam_optimizer.noma](examples/22_adam_optimizer.noma) | Adam optimizer |
-| [28_batch_training.noma](examples/28_batch_training.noma) | Mini-batch SGD with file I/O |
+| [28_batch_training.noma](examples/28_batch_training.noma) | Mini-batch SGD |
 
 **[→ All Examples](examples/)**
 
 ---
 
-## Compiler Commands
+## Roadmap
 
-```bash
-# Interpret and run (with training support)
-cargo run -- run <file.noma>
-
-# Fast-run: compile to native and execute (no training loops)
-cargo run -- fast-run <file.noma>
-
-# Build standalone executable
-cargo run -- build-exe <file.noma> -o output
-
-# Compile to LLVM IR
-cargo run -- compile <file.noma> -o output.ll
-
-# With optimizations
-cargo run -- build-exe <file.noma> -o output -O 3 --fast-math
-```
-
-### Execution Modes
-
-| Mode | Use Case | Training Support | Speed |
-|------|----------|------------------|-------|
-| `run` | Development, debugging | Full | Interpreter |
-| `fast-run` | Quick testing, inference | Full | Native (JIT) |
-| `build-exe` | Production deployment | Full | Native binary |
-
-> **Note:** All modes now support training (`optimize` loops). The compiled modes execute the training loop that was already computed during the lowering phase, embedding the final trained weights into the binary.
+- [ ] True runtime control flow (dynamic branching)
+- [ ] Multi-file projects and imports
+- [ ] Additional data types (int, bool, string)
+- [ ] Debugging support (source maps, breakpoints)
+- [ ] Extended GPU backend (CUDA/PTX)
+- [ ] Additional optimizers (L-BFGS, AdaGrad)
 
 ---
 
-## Architecture
+## Related Work
 
-```
-Source Code               Compilation Pipeline              Output
-────────────              ──────────────────────            ──────
+NOMA builds on ideas from two active research areas: **compiler-level automatic differentiation** and **dynamic neural architectures**.
 
-  .noma file                                              Native Binary
-      │                                                      (16 KB)
-      ├──> Lexer ──> Parser ──> AST                            │
-      │                            │                           │
-      │                            ▼                           │
-      │                    Computational Graph                 │
-      │                            │                           │
-      │                            ├──> Autodiff Pass          │
-      │                            │    (Chain Rule)           │
-      │                            │                           │
-      │                            ▼                           │
-      └──────────────────> LLVM IR Generation ───────> Optimization
-                                   │                           │
-                                   └─────> clang ──────────────┘
-                                          Linker
-```
+### Autodiff as Program Transformation
 
-**Key Insight:** Autodiff happens *during compilation*, not at runtime. Your gradients are baked into the binary as native instructions.
+| Paper | Relevance to NOMA |
+|-------|-------------------|
+| [Innes (2018) - *Don't Unroll Adjoint: Differentiating SSA-Form Programs*](https://arxiv.org/abs/1810.07951) | Reverse-mode AD on SSA/IR, foundational for compile-time autodiff |
+| [van Merriënboer et al. (2018) - *Automatic differentiation in ML*](https://papers.neurips.cc/paper/8092-automatic-differentiation-in-ml-where-we-are-and-where-we-should-be-going.pdf) | Survey positioning AD approaches, runtime vs compile-time tradeoffs |
+| [Abadi & Plotkin (2020) - *A Simple Differentiable Programming Language*](https://arxiv.org/abs/1911.04523) | Formal semantics for differentiable languages |
+| [Moses & Churavy - *Enzyme*](https://enzyme.mit.edu/) | AD on LLVM IR; NOMA differs by owning the full language semantics |
+
+### Differentiable Programming Languages
+
+| Paper | Relevance to NOMA |
+|-------|-------------------|
+| [Hu et al. (2019) - *DiffTaichi*](https://arxiv.org/abs/1910.00935) | Domain-specific language with integrated AD |
+| [Saeta et al. (2021) - *Swift for TensorFlow*](https://proceedings.mlsys.org/paper_files/paper/2021/file/5fd0b37cd7dbbb00f97ba6ce92bf5add-Paper.pdf) | First-class AD in a general-purpose language |
+| [Bradbury et al. (2018) - *JAX*](https://github.com/google/jax) | Composable transformations (grad, jit, vmap) |
+
+### Dynamic Architectures (Grow/Shrink)
+
+| Paper | Relevance to NOMA |
+|-------|-------------------|
+| [Chen et al. (2016) - *Net2Net*](https://arxiv.org/abs/1511.05641) | Widening/deepening networks while preserving learned representations |
+| [Karras et al. (2018) - *Progressive Growing of GANs*](https://openreview.net/forum?id=Hk99zCeAb) | Adding layers during training |
+| [Cortes et al. (2017) - *AdaNet*](https://arxiv.org/abs/1607.01097) | Adaptive structure learning with theoretical guarantees |
+| [Stanley & Miikkulainen (2002) - *NEAT*](https://dl.acm.org/doi/10.1162/106365602320169811) | Topology augmentation in neuroevolution |
 
 ---
 
-## Current Status: Alpha
+## Research & Contributions
 
-### Implemented
-- Lexer, parser, AST
-- Computational graph with autodiff
-- **LLVM IR codegen with full tensor support**
-  - Element-wise operations (add, sub, mul, div)
-  - Matrix multiplication (matmul)
-  - Activation functions (sigmoid, relu, tanh)
-  - Reductions (sum, mean)
-  - Scalar-tensor broadcasting
-- Native compilation via `build-exe`
-- Optimization loops (SGD, Adam, RMSprop)
-- Tensor operations with broadcasting
-- User-defined functions
-- Dynamic memory (`alloc`/`realloc`/`free`)
-- Batch processing
-- File I/O (CSV, Safetensors)
-- Random initialization (Xavier, He)
-- Interpreter mode for rapid testing
-- **Fast-run mode** for compiled execution
+NOMA is intended as a research vehicle for exploring language-level semantics around differentiable programming, optimization state, and dynamic topology.
 
-### Performance
+### Areas of Interest
 
-| Mode | Time | Speedup |
-|------|------|---------|
-| Python + NumPy | ~29ms | baseline |
-| NOMA interpreter | ~99ms | 0.3× |
-| NOMA compiled | **~0.8ms** | **35×** |
-| C++ (hand-optimized) | ~0.8ms | 35× |
+- Optimizer implementations (L-BFGS, AdaGrad)
+- Built-in operations (convolutions, pooling)
+- Error messages and diagnostics
+- BLAS/LAPACK integration
+- GPU backend improvements
 
-*Benchmarked on XOR self-growing neural network with Adam optimizer (200 + 120 iterations, dynamic reallocation at step 200). NOMA achieves 3× lower final loss due to optimizer state preservation.*
+Feedback, issues, and experimental contributions are welcome.
 
-### Known Limitations
-- **Single data type**: Only `f64` (no int, bool, string)
-- **No module system**: Single-file programs only
-- **Control flow**: Compile-time evaluation (while loops unroll graph)
-- **No recursion**: Functions are inlined
-- **No debugging**: No breakpoints or source maps yet
-- **Training timing**: Training occurs during compilation phase (final weights are embedded)
-
-### Roadmap
-- Multi-file projects & imports
-- Additional data types (int, bool, string)
-- Runtime control flow (dynamic branching)
-- Debugging support
-- Extended GPU support
+**[→ Contributing Guide](CONTRIBUTING.md)**
 
 ---
 
@@ -347,35 +313,14 @@ Source Code               Compilation Pipeline              Output
 
 **N**eural-**O**riented **M**achine **A**rchitecture
 
-The name reflects the philosophy: neural network training should be a *first-class language feature*, not a library bolted onto a general-purpose language. NOMA treats gradients like any other compiler concept - types, memory, optimization passes.
+The name reflects the design philosophy: neural network training as a first-class language feature, not a library. Gradients are treated like any other compiler concept-types, memory, optimization passes.
 
 ---
 
-## Contributing
-
-Contributions welcome! Please open an issue or PR. Areas particularly valuable:
-- Additional optimizers (L-BFGS, AdaGrad)
-- More built-in functions (convolutions, pooling)
-- Improved error messages
-- BLAS/LAPACK integration
-- Extended GPU support
-
----
-
-## License
-
-MIT License - see [LICENSE](LICENSE) for details.
-
----
-
-## Learn More
+## Resources
 
 - **[Language Guide](LANGUAGE_GUIDE.md)** - Complete language reference
-- **[Examples](examples/)** - 28+ code samples
+- **[Quick Start](QUICKSTART.md)** - Installation and first steps
+- **[Examples](examples/)** - 28 code samples
 - **[VS Code Extension](noma-vscode/)** - Syntax highlighting
-
----
-
-<p align="center">
-  <em>Built for ML engineers who want native performance without the runtime overhead.</em>
-</p>
+- **[Architecture Comparison](docs/ARCHITECTURE_COMPARISON.md)** - Detailed design document
