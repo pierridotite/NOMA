@@ -14,6 +14,20 @@ Cargo.lock
 #demo
 demo_TTA_MNIST/sequencer/mnist_stream
 demo_TTA_MNIST/sequencer/mnist_data
+demo_TTA_MNIST/noma_baseline/data/*.safetensors
+demo_TTA_MNIST/noma_baseline/output/*.csv
+demo_TTA_MNIST/noma_baseline/output/*.json
+demo_TTA_MNIST/noma_baseline/output/*.safetensors
+demo_TTA_MNIST/python_baseline/output/*.csv
+demo_TTA_MNIST/python_baseline/output/*.json
+demo_TTA_MNIST/output/*.csv
+
+# Python
+**/__pycache__/
+**/*.pyc
+**/.ipynb_checkpoints/
+*.egg-info/
+.pytest_cache/
 
 # OS
 .DS_Store

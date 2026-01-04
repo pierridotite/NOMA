@@ -27,11 +27,13 @@ pub enum TokenType {
     LoadCsv,     // load_csv
     SaveCsv,     // save_csv
     LoadSafetensors,  // load_safetensors
+    LoadSafetensorsNamed,  // load_safetensors_named
     SaveSafetensors,  // save_safetensors
     
     // Batch processing
     Batch,       // batch
     In,          // in
+    Epoch,       // epoch
     
     // Types
     Tensor,      // tensor
@@ -119,9 +121,11 @@ impl fmt::Display for TokenType {
             TokenType::LoadCsv => write!(f, "load_csv"),
             TokenType::SaveCsv => write!(f, "save_csv"),
             TokenType::LoadSafetensors => write!(f, "load_safetensors"),
+            TokenType::LoadSafetensorsNamed => write!(f, "load_safetensors_named"),
             TokenType::SaveSafetensors => write!(f, "save_safetensors"),
             TokenType::Batch => write!(f, "batch"),
             TokenType::In => write!(f, "in"),
+            TokenType::Epoch => write!(f, "epoch"),
             TokenType::Tensor => write!(f, "tensor"),
             TokenType::Identifier(name) => write!(f, "identifier({})", name),
             TokenType::Number(n) => write!(f, "number({})", n),

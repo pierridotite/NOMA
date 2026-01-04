@@ -1,0 +1,107 @@
+// NOMA Static Baseline - Full Training on 60k MNIST
+// Architecture: 784 -> 256 (ReLU) -> 128 (ReLU) -> 10 (Softmax)
+// Uses Cross-Entropy style MSE loss with one-hot targets
+// Mini-batch SGD with Adam optimizer
+
+fn main() {
+    // =========================================================================
+    // Hyperparameters (matching Python baseline)
+    // =========================================================================
+    let optimizer = 2.0;       // Adam
+    let learning_rate = 0.001; // Same as Python baseline
+    let beta1 = 0.9;
+    let beta2 = 0.999;
+    let epsilon = 0.00000001;
+    
+    let batch_size = 64.0;     // Same as Python baseline
+    let epochs = 10.0;         // Same as Python baseline
+
+    print("=== NOMA Static Baseline - Full Training ===");
+    print("Architecture: 784 -> 256 -> 128 -> 10");
+    print("Loading MNIST training data (60000 samples)...");
+
+    // =========================================================================
+    // Load Training Data (full 60k samples)
+    // =========================================================================
+    load_safetensors_named X_train = "demo_TTA_MNIST/noma_baseline/data/mnist_train.safetensors" : "x";
+    load_safetensors_named Y_train = "demo_TTA_MNIST/noma_baseline/data/mnist_train.safetensors" : "y_onehot";
+    
+    print("Training data loaded successfully!");
+
+    // =========================================================================
+    // Initialize Network Weights (Xavier initialization)
+    // =========================================================================
+    print("Initializing network...");
+    
+    // Layer 1: 784 -> 256 (with ReLU)
+    learn W1 = xavier_init(784.0, 256.0, 784.0, 256.0);
+    learn b1 = rand_tensor(1.0, 256.0) * 0.01;
+    
+    // Layer 2: 256 -> 128 (with ReLU)
+    learn W2 = xavier_init(256.0, 128.0, 256.0, 128.0);
+    learn b2 = rand_tensor(1.0, 128.0) * 0.01;
+    
+    // Layer 3: 128 -> 10 (output layer with Softmax)
+    learn W3 = xavier_init(128.0, 10.0, 128.0, 10.0);
+    learn b3 = rand_tensor(1.0, 10.0) * 0.01;
+
+    print("Starting training...");
+
+    // =========================================================================
+    // Training Loop with Mini-batches
+    // =========================================================================
+    epoch epochs batch X_train, Y_train with batch_size -> x_batch, y_batch {
+        // Forward pass
+        let z1 = matmul(x_batch, W1) + b1;
+        let h1 = relu(z1);
+        
+        let z2 = matmul(h1, W2) + b2;
+        let h2 = relu(z2);
+        
+        let z3 = matmul(h2, W3) + b3;
+        let pred = softmax(z3);
+        
+        // MSE Loss (simulates cross-entropy for one-hot targets)
+        let error = pred - y_batch;
+        let loss = mean(error * error);
+        
+        minimize loss;
+    }
+
+    print("Training complete!");
+
+    // =========================================================================
+    // Compute final loss on training set
+    // =========================================================================
+    print("Computing final training loss...");
+    
+    // Forward pass on full dataset
+    let z1_full = matmul(X_train, W1) + b1;
+    let h1_full = relu(z1_full);
+    let z2_full = matmul(h1_full, W2) + b2;
+    let h2_full = relu(z2_full);
+    let z3_full = matmul(h2_full, W3) + b3;
+    let pred_full = softmax(z3_full);
+    
+    let error_full = pred_full - Y_train;
+    let final_loss = mean(error_full * error_full);
+    
+    print("Final training loss:");
+    print(final_loss);
+
+    // =========================================================================
+    // Save Trained Weights
+    // =========================================================================
+    print("Saving model...");
+    save_safetensors {
+        W1: W1,
+        b1: b1,
+        W2: W2,
+        b2: b2,
+        W3: W3,
+        b3: b3
+    }, "demo_TTA_MNIST/noma_baseline/output/model_weights_full.safetensors";
+    
+    print("=== Training Complete ===");
+    return final_loss;
+}

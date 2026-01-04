@@ -144,6 +144,12 @@ pub enum Statement {
         name: String,
         path: String,
     },
+    /// Load a specific named tensor from Safetensors file: load_safetensors_named x = "file.safetensors" : "tensor_name";
+    LoadSafetensorsNamed {
+        name: String,
+        path: String,
+        tensor_name: String,
+    },
     /// Save tensors to Safetensors file: save_safetensors(tensors, "model.safetensors");
     SaveSafetensors {
         tensors: Vec<(String, Expression)>,
@@ -156,6 +162,18 @@ pub enum Statement {
         index_name: Option<String>,
         data: Expression,
         batch_size: Expression,
+        body: Vec<Statement>,
+    },
+    /// Epoch training loop with synchronized mini-batch gradient descent
+    /// epoch N batch X, Y with batch_size as x_batch, y_batch { body with minimize }
+    /// Runs N epochs, each epoch processes all batches with weight updates per batch
+    EpochLoop {
+        epochs: Expression,
+        x_data: Expression,
+        y_data: Expression,
+        batch_size: Expression,
+        x_batch_name: String,
+        y_batch_name: String,
         body: Vec<Statement>,
     },
 }

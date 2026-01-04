@@ -231,6 +231,23 @@ fn lower_statements_shared(
                     return Err(format!("No tensors found in safetensors file: {}", path));
                 }
             }
+            noma_compiler::Statement::LoadSafetensorsNamed { name, path, tensor_name } => {
+                // Load a specific named tensor from Safetensors file
+                let tensors = noma_compiler::load_safetensors_file(path)?;
+                let mut found = false;
+                for (tname, (data, shape)) in tensors {
+                    if tname == *tensor_name {
+                        let node_id = graph.add_constant_tensor(data, shape)?;
+                        variables.insert(name.clone(), node_id);
+                        *last_node = Some(node_id);
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    return Err(format!("Tensor '{}' not found in safetensors file: {}", tensor_name, path));
+                }
+            }
             noma_compiler::Statement::SaveSafetensors { tensors, path } => {
                 // Evaluate all tensors and save to Safetensors format
                 let mut tensor_map = Vec::new();
@@ -306,6 +323,168 @@ fn lower_statements_shared(
                     // Execute batch body
                     lower_statements_shared(graph, variables, body, last_node, func_registry, optimizer_state)?;
                 }
+            }
+            noma_compiler::Statement::EpochLoop { epochs, x_data, y_data, batch_size, x_batch_name, y_batch_name, body } => {
+                // Evaluate epochs count
+                let epochs_id = graph.build_from_expression_with_functions(epochs, variables, func_registry)?;
+                graph.forward_pass()?;
+                let num_epochs = graph.get_node(epochs_id)
+                    .and_then(|n| n.value.clone())
+                    .and_then(|v| v.as_scalar())
+                    .ok_or_else(|| "Epoch count must be a scalar".to_string())? as usize;
+                
+                // Evaluate X and Y data tensors
+                let x_data_id = graph.build_from_expression_with_functions(x_data, variables, func_registry)?;
+                let y_data_id = graph.build_from_expression_with_functions(y_data, variables, func_registry)?;
+                graph.forward_pass()?;
+                
+                let x_val = graph.get_node(x_data_id)
+                    .and_then(|n| n.value.clone())
+                    .ok_or_else(|| "Cannot evaluate X data for epoch loop".to_string())?;
+                let y_val = graph.get_node(y_data_id)
+                    .and_then(|n| n.value.clone())
+                    .ok_or_else(|| "Cannot evaluate Y data for epoch loop".to_string())?;
+                
+                // Evaluate batch size
+                let batch_size_id = graph.build_from_expression_with_functions(batch_size, variables, func_registry)?;
+                graph.forward_pass()?;
+                let batch_size_val = graph.get_node(batch_size_id)
+                    .and_then(|n| n.value.clone())
+                    .and_then(|v| v.as_scalar())
+                    .ok_or_else(|| "Batch size must be a scalar".to_string())? as usize;
+                
+                if batch_size_val == 0 {
+                    return Err("Batch size cannot be zero".to_string());
+                }
+                
+                // Extract tensor data
+                let (x_tensor_data, x_tensor_shape) = match &x_val {
+                    noma_compiler::Value::Tensor(t) => (t.data.clone(), t.shape.clone()),
+                    noma_compiler::Value::Scalar(s) => (vec![*s], vec![1]),
+                };
+                let (y_tensor_data, y_tensor_shape) = match &y_val {
+                    noma_compiler::Value::Tensor(t) => (t.data.clone(), t.shape.clone()),
+                    noma_compiler::Value::Scalar(s) => (vec![*s], vec![1]),
+                };
+                
+                let num_samples = if x_tensor_shape.is_empty() { 1 } else { x_tensor_shape[0] };
+                let num_batches = (num_samples + batch_size_val - 1) / batch_size_val;
+                
+                // Get optimizer config
+                let (config, _) = pick_hyperparams(graph, variables, 0.01, 1);
+                
+                println!("Starting epoch training: {} epochs, {} samples, batch_size={}, {} batches/epoch", 
+                         num_epochs, num_samples, batch_size_val, num_batches);
+                
+                // ============================================================
+                // OPTIMIZATION: Build graph ONCE, reuse for all batches
+                // ============================================================
+                
+                // Create placeholder batch nodes with first batch data
+                let first_batch_size = batch_size_val.min(num_samples);
+                let x_row_size: usize = if x_tensor_shape.len() > 1 { x_tensor_shape[1..].iter().product() } else { 1 };
+                let y_row_size: usize = if y_tensor_shape.len() > 1 { y_tensor_shape[1..].iter().product() } else { 1 };
+                
+                let x_first_batch: Vec<f64> = x_tensor_data[0..first_batch_size * x_row_size].to_vec();
+                let y_first_batch: Vec<f64> = y_tensor_data[0..first_batch_size * y_row_size].to_vec();
+                
+                let x_batch_shape_template = if x_tensor_shape.len() == 1 {
+                    vec![first_batch_size]
+                } else {
+                    let mut shape = vec![first_batch_size];
+                    shape.extend(&x_tensor_shape[1..]);
+                    shape
+                };
+                let y_batch_shape_template = if y_tensor_shape.len() == 1 {
+                    vec![first_batch_size]
+                } else {
+                    let mut shape = vec![first_batch_size];
+                    shape.extend(&y_tensor_shape[1..]);
+                    shape
+                };
+                
+                // Create the batch nodes once
+                let x_batch_node = graph.add_constant_tensor(x_first_batch, x_batch_shape_template.clone())?;
+                let y_batch_node = graph.add_constant_tensor(y_first_batch, y_batch_shape_template.clone())?;
+                variables.insert(x_batch_name.clone(), x_batch_node);
+                variables.insert(y_batch_name.clone(), y_batch_node);
+                
+                // Build the graph ONCE by processing the body
+                let mut body_last: Option<noma_compiler::NodeId> = None;
+                let mut loss_node_id: Option<noma_compiler::NodeId> = None;
+                
+                for stmt in body {
+                    match stmt {
+                        noma_compiler::Statement::Minimize(expr) => {
+                            let loss_id = graph.build_from_expression_with_functions(expr, variables, func_registry)?;
+                            loss_node_id = Some(loss_id);
+                            body_last = Some(loss_id);
+                        }
+                        _ => {
+                            lower_statements_shared(graph, variables, &[stmt.clone()], &mut body_last, func_registry, optimizer_state)?;
+                        }
+                    }
+                }
+                
+                let loss_id = loss_node_id.ok_or_else(|| "EpochLoop body must contain a minimize statement".to_string())?;
+                
+                // Epoch loop - now REUSING the graph
+                for epoch in 0..num_epochs {
+                    let mut epoch_loss = 0.0;
+                    let mut batch_count = 0;
+                    
+                    // Batch loop
+                    for batch_idx in 0..num_batches {
+                        let start = batch_idx * batch_size_val;
+                        let end = (start + batch_size_val).min(num_samples);
+                        let actual_batch_size = end - start;
+                        
+                        // Skip last batch if size differs (to keep graph shape consistent)
+                        if actual_batch_size != first_batch_size {
+                            continue;
+                        }
+                        
+                        // Extract X batch data
+                        let x_batch_data: Vec<f64> = x_tensor_data[start * x_row_size..end * x_row_size].to_vec();
+                        let y_batch_data: Vec<f64> = y_tensor_data[start * y_row_size..end * y_row_size].to_vec();
+                        
+                        // UPDATE node values in-place (no graph rebuild!)
+                        graph.update_node_value(x_batch_node, x_batch_data, x_batch_shape_template.clone())?;
+                        graph.update_node_value(y_batch_node, y_batch_data, y_batch_shape_template.clone())?;
+                        
+                        // Forward pass (recomputes all values)
+                        graph.forward_pass()?;
+                        
+                        // Get loss value for logging
+                        if let Some(node) = graph.get_node(loss_id) {
+                            if let Some(noma_compiler::Value::Scalar(loss)) = &node.value {
+                                epoch_loss += loss;
+                                batch_count += 1;
+                                
+                                // Progress update every 10 batches
+                                if batch_count % 10 == 0 {
+                                    let progress = (batch_idx + 1) as f64 / num_batches as f64 * 100.0;
+                                    let avg_loss_so_far = epoch_loss / batch_count as f64;
+                                    eprintln!("  [{:>3.0}%] Epoch {}/{} batch {}/{} | loss: {:.6}", 
+                                           progress, epoch + 1, num_epochs, batch_idx + 1, num_batches, avg_loss_so_far);
+                                }
+                            }
+                        }
+                        
+                        // Backward pass
+                        graph.backward_pass(loss_id)?;
+                        
+                        // Update weights using optimizer and reset gradients
+                        graph.optimize_step_with_config(optimizer_state, &config)?;
+                        graph.reset_gradients();
+                    }
+                    
+                    // Print epoch summary
+                    let avg_loss = if batch_count > 0 { epoch_loss / batch_count as f64 } else { 0.0 };
+                    println!("\n✓ Epoch {}/{} complete: avg_loss = {:.6}", epoch + 1, num_epochs, avg_loss);
+                }
+                
+                println!("Epoch training complete!");
             }
             noma_compiler::Statement::ResetOptimizer => {
                 // Clear all optimizer state (m, v, t) to restart from scratch

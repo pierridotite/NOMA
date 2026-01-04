@@ -1,0 +1,16 @@
+{
+  "source": "mnist_stream",
+  "n_samples": 60000,
+  "t0": 30000,
+  "image_shape": [
+    784
+  ],
+  "original_image_shape": [
+    1,
+    28,
+    28
+  ],
+  "perturbation_type": "gaussian_noise",
+  "max_intensity": 0.8,
+  "created": "2026-01-04T19:24:41.425405"
+}

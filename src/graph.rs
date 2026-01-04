@@ -112,33 +112,40 @@ impl Value {
 
     pub fn map_unary<F>(&self, f: F) -> Result<Value, String>
     where
-        F: Fn(f64) -> f64,
+        F: Fn(f64) -> f64 + Sync + Send,
     {
+        use rayon::prelude::*;
         match self {
             Value::Scalar(v) => Ok(Value::Scalar(f(*v))),
-            Value::Tensor(t) => Ok(Value::Tensor(Tensor { data: t.data.iter().map(|x| f(*x)).collect(), shape: t.shape.clone() })),
+            Value::Tensor(t) => Ok(Value::Tensor(Tensor { 
+                data: t.data.par_iter().map(|x| f(*x)).collect(), 
+                shape: t.shape.clone() 
+            })),
         }
     }
 
     pub fn map2<F>(&self, other: &Value, f: F) -> Result<Value, String>
     where
-        F: Fn(f64, f64) -> f64,
+        F: Fn(f64, f64) -> f64 + Sync + Send,
     {
+        use rayon::prelude::*;
         match (self, other) {
             (Value::Scalar(a), Value::Scalar(b)) => Ok(Value::Scalar(f(*a, *b))),
             (Value::Tensor(t1), Value::Tensor(t2)) => {
                 if t1.shape != t2.shape {
                     return Err("Tensor shape mismatch".to_string());
                 }
-                let data = t1.data.iter().zip(t2.data.iter()).map(|(a, b)| f(*a, *b)).collect();
+                let data = t1.data.par_iter().zip(t2.data.par_iter()).map(|(a, b)| f(*a, *b)).collect();
                 Ok(Value::Tensor(Tensor { data, shape: t1.shape.clone() }))
             }
             (Value::Scalar(s), Value::Tensor(t)) => {
-                let data = t.data.iter().map(|b| f(*s, *b)).collect();
+                let s = *s;
+                let data = t.data.par_iter().map(|b| f(s, *b)).collect();
                 Ok(Value::Tensor(Tensor { data, shape: t.shape.clone() }))
             }
             (Value::Tensor(t), Value::Scalar(s)) => {
-                let data = t.data.iter().map(|a| f(*a, *s)).collect();
+                let s = *s;
+                let data = t.data.par_iter().map(|a| f(*a, s)).collect();
                 Ok(Value::Tensor(Tensor { data, shape: t.shape.clone() }))
             }
         }
@@ -313,6 +320,21 @@ impl ComputationalGraph {
 
         self.nodes.insert(id, node);
         Ok(id)
+    }
+
+    /// Update the value of an existing node in-place (for batch updates in epoch loops)
+    pub fn update_node_value(&mut self, node_id: NodeId, data: Vec<f64>, shape: Vec<usize>) -> Result<(), String> {
+        let tensor = Tensor::new(data, shape)?;
+        if let Some(node) = self.nodes.get_mut(&node_id) {
+            node.value = Some(Value::Tensor(tensor.clone()));
+            // Also update the node_type if it's a Constant
+            if let NodeType::Constant(_) = &node.node_type {
+                node.node_type = NodeType::Constant(Value::Tensor(tensor));
+            }
+            Ok(())
+        } else {
+            Err(format!("Node {:?} not found", node_id))
+        }
     }
 
     pub fn add_learnable(&mut self, name: String, initial_value: f64) -> NodeId {
@@ -878,6 +900,24 @@ impl ComputationalGraph {
                     // reset_optimizer is handled at runtime by main.rs, not in the graph
                     // In function context, this is a no-op
                 }
+                Statement::LoadSafetensorsNamed { name, path, tensor_name } => {
+                    // Load a specific tensor from a safetensors file
+                    let tensors = load_safetensors_file(path)?;
+                    if let Some((data, shape)) = tensors.iter()
+                        .find(|(key, _)| key == tensor_name)
+                        .map(|(_, v)| v)
+                    {
+                        let node_id = self.add_constant_tensor(data.clone(), shape.clone())?;
+                        variables.insert(name.clone(), node_id);
+                        last_node = Some(node_id);
+                    } else {
+                        return Err(format!("Key '{}' not found in safetensors file: {}", tensor_name, path));
+                    }
+                }
+                Statement::EpochLoop { .. } => {
+                    // EpochLoop is handled at runtime by main.rs, not in the graph
+                    return Err("EpochLoop not supported inside user functions".to_string());
+                }
             }
         }
 
@@ -1181,6 +1221,40 @@ impl ComputationalGraph {
                             if inputs.len() != 1 { return Err("tanh expects 1 argument".to_string()); }
                             let v = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone()).ok_or("Missing argument")?;
                             let res = v.map_unary(|x| x.tanh())?;
+                            if let Some(node) = self.nodes.get_mut(&node_id) { node.value = Some(res); }
+                        }
+                        "softmax" => {
+                            if inputs.len() != 1 { return Err("softmax expects 1 argument".to_string()); }
+                            let v = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone()).ok_or("Missing argument")?;
+                            let res = match v {
+                                Value::Scalar(_) => Value::Scalar(1.0),
+                                Value::Tensor(t) => {
+                                    if t.shape.len() == 1 {
+                                        let max_val = t.data.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                                        let exp_vals: Vec<f64> = t.data.iter().map(|&x| (x - max_val).exp()).collect();
+                                        let sum: f64 = exp_vals.iter().sum();
+                                        let result: Vec<f64> = exp_vals.iter().map(|&x| x / sum).collect();
+                                        Value::Tensor(Tensor::new(result, t.shape.clone())?)
+                                    } else if t.shape.len() == 2 {
+                                        let (rows, cols) = (t.shape[0], t.shape[1]);
+                                        let mut result = vec![0.0; t.data.len()];
+                                        for r in 0..rows {
+                                            let start = r * cols;
+                                            let end = start + cols;
+                                            let row_data = &t.data[start..end];
+                                            let max_val = row_data.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                                            let exp_vals: Vec<f64> = row_data.iter().map(|&x| (x - max_val).exp()).collect();
+                                            let sum: f64 = exp_vals.iter().sum();
+                                            for (i, &e) in exp_vals.iter().enumerate() {
+                                                result[start + i] = e / sum;
+                                            }
+                                        }
+                                        Value::Tensor(Tensor::new(result, t.shape.clone())?)
+                                    } else {
+                                        return Err("softmax only supports 1D or 2D tensors".to_string());
+                                    }
+                                }
+                            };
                             if let Some(node) = self.nodes.get_mut(&node_id) { node.value = Some(res); }
                         }
                         "exp" => {
@@ -1636,6 +1710,45 @@ impl ComputationalGraph {
                                             },
                                         };
                                         if let Some(node) = self.nodes.get_mut(&inputs[0]) { node.gradient = Some(add_grad(node.gradient.clone(), local)?); }
+                                    }
+                                }
+                                "softmax" => {
+                                    // Softmax backward: grad_in[i] = softmax[i] * (grad_out[i] - sum_j(softmax[j] * grad_out[j]))
+                                    // We need the output of softmax which is stored in node.value
+                                    if let Some(output_node) = self.nodes.get(&node_id) {
+                                        if let Some(Value::Tensor(softmax_out)) = &output_node.value {
+                                            let local = match gradient.clone() {
+                                                Value::Tensor(g) if g.shape == softmax_out.shape => {
+                                                    if softmax_out.shape.len() == 1 {
+                                                        let dot_prod: f64 = softmax_out.data.iter().zip(g.data.iter()).map(|(s, gi)| s * gi).sum();
+                                                        let result: Vec<f64> = softmax_out.data.iter().zip(g.data.iter())
+                                                            .map(|(s, gi)| s * (gi - dot_prod))
+                                                            .collect();
+                                                        Value::Tensor(Tensor::new(result, softmax_out.shape.clone())?)
+                                                    } else if softmax_out.shape.len() == 2 {
+                                                        let (rows, cols) = (softmax_out.shape[0], softmax_out.shape[1]);
+                                                        let mut result = vec![0.0; softmax_out.data.len()];
+                                                        for r in 0..rows {
+                                                            let start = r * cols;
+                                                            let end = start + cols;
+                                                            let s_row = &softmax_out.data[start..end];
+                                                            let g_row = &g.data[start..end];
+                                                            let dot_prod: f64 = s_row.iter().zip(g_row.iter()).map(|(s, gi)| s * gi).sum();
+                                                            for (i, (si, gi)) in s_row.iter().zip(g_row.iter()).enumerate() {
+                                                                result[start + i] = si * (gi - dot_prod);
+                                                            }
+                                                        }
+                                                        Value::Tensor(Tensor::new(result, softmax_out.shape.clone())?)
+                                                    } else {
+                                                        return Err("softmax backward only supports 1D or 2D tensors".to_string());
+                                                    }
+                                                }
+                                                _ => return Err("softmax backward: gradient shape mismatch".to_string()),
+                                            };
+                                            if let Some(node) = self.nodes.get_mut(&inputs[0]) { 
+                                                node.gradient = Some(add_grad(node.gradient.clone(), local)?); 
+                                            }
+                                        }
                                     }
                                 }
                                 "exp" => {
@@ -2286,25 +2399,28 @@ fn reduce_to_shape(t: &Tensor, target_shape: &[usize]) -> Result<Tensor, String>
 }
 
 fn broadcast_binary(a: &Value, b: &Value, op: &str) -> Result<Value, String> {
+    use rayon::prelude::*;
     match (a, b) {
         (Value::Scalar(x), Value::Scalar(y)) => Ok(Value::Scalar(match op { "add"=>x+y, "sub"=>x-y, "mul"=>x*y, "div"=>x/y, _=>unreachable!() })),
         (Value::Scalar(x), Value::Tensor(tb)) => {
-            let data = tb.data.iter().map(|&y| match op { "add"=>x + y, "sub"=>x - y, "mul"=>x * y, "div"=>x / y, _=>unreachable!() }).collect();
+            let x = *x;
+            let data = tb.data.par_iter().map(|&y| match op { "add"=>x + y, "sub"=>x - y, "mul"=>x * y, "div"=>x / y, _=>unreachable!() }).collect();
             Ok(Value::Tensor(Tensor { data, shape: tb.shape.clone() }))
         }
         (Value::Tensor(ta), Value::Scalar(y)) => {
-            let data = ta.data.iter().map(|&x| match op { "add"=>x + y, "sub"=>x - y, "mul"=>x * y, "div"=>x / y, _=>unreachable!() }).collect();
+            let y = *y;
+            let data = ta.data.par_iter().map(|&x| match op { "add"=>x + y, "sub"=>x - y, "mul"=>x * y, "div"=>x / y, _=>unreachable!() }).collect();
             Ok(Value::Tensor(Tensor { data, shape: ta.shape.clone() }))
         }
         (Value::Tensor(ta), Value::Tensor(tb)) => {
             let out_shape = broadcast_shapes(&ta.shape, &tb.shape)?;
             if ta.shape == out_shape && tb.shape == out_shape {
-                let data = ta.data.iter().zip(tb.data.iter()).map(|(&x,&y)| match op { "add"=>x+y, "sub"=>x-y, "mul"=>x*y, "div"=>x/y, _=>unreachable!() }).collect();
+                let data = ta.data.par_iter().zip(tb.data.par_iter()).map(|(&x,&y)| match op { "add"=>x+y, "sub"=>x-y, "mul"=>x*y, "div"=>x/y, _=>unreachable!() }).collect();
                 Ok(Value::Tensor(Tensor { data, shape: out_shape }))
             } else {
                 let a_exp = broadcast_to(ta, &out_shape)?;
                 let b_exp = broadcast_to(tb, &out_shape)?;
-                let data = a_exp.data.iter().zip(b_exp.data.iter()).map(|(&x,&y)| match op { "add"=>x+y, "sub"=>x-y, "mul"=>x*y, "div"=>x/y, _=>unreachable!() }).collect();
+                let data = a_exp.data.par_iter().zip(b_exp.data.par_iter()).map(|(&x,&y)| match op { "add"=>x+y, "sub"=>x-y, "mul"=>x*y, "div"=>x/y, _=>unreachable!() }).collect();
                 Ok(Value::Tensor(Tensor { data, shape: out_shape }))
             }
         }
@@ -2401,21 +2517,22 @@ fn transpose_tensor(t: &Tensor) -> Tensor {
 }
 
 fn matmul_tensors(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
+    use ndarray::{ArrayView2, Array2};
+
     if a.shape.len() != 2 || b.shape.len() != 2 { return Err("matmul expects rank-2 tensors".to_string()); }
     let (m,k) = (a.shape[0], a.shape[1]);
     let (k2,n) = (b.shape[0], b.shape[1]);
     if k != k2 { return Err("matmul inner dimensions must match".to_string()); }
-    let mut out = vec![0.0; m*n];
-    for i in 0..m {
-        for j in 0..n {
-            let mut s = 0.0;
-            for p in 0..k {
-                s += a.data[i*k + p] * b.data[p*n + j];
-            }
-            out[i*n + j] = s;
-        }
-    }
-    Ok(Tensor { data: out, shape: vec![m, n] })
+
+    // Create views without copying
+    let a_view = ArrayView2::from_shape((m, k), &a.data)
+        .map_err(|e| format!("Invalid shape for A in matmul: {}", e))?;
+    let b_view = ArrayView2::from_shape((k, n), &b.data)
+        .map_err(|e| format!("Invalid shape for B in matmul: {}", e))?;
+
+    // Perform matrix multiplication using ndarray (fast loop; no extra clones)
+    let c: Array2<f64> = a_view.dot(&b_view);
+    Ok(Tensor { data: c.into_raw_vec(), shape: vec![m, n] })
 }
 
 fn matmul_tensors_raw(a: &Tensor, b: &Tensor) -> Result<Tensor, String> {
@@ -2456,32 +2573,20 @@ pub fn load_csv_file(path: &str) -> Result<(Vec<f64>, Vec<usize>), String> {
         let row_values = values.map_err(|e| format!("Error parsing line {}: {}", line_num + 1, e))?;
         
         // Validate column count consistency
-        match num_cols {
-            None => num_cols = Some(row_values.len()),
-            Some(expected) if expected != row_values.len() => {
-                return Err(format!(
-                    "Inconsistent column count at line {}: expected {}, got {}",
-                    line_num + 1, expected, row_values.len()
-                ));
+        if let Some(cols) = num_cols {
+            if row_values.len() != cols {
+                return Err(format!("Inconsistent column count at line {}", line_num + 1));
             }
-            _ => {}
+        } else {
+            num_cols = Some(row_values.len());
         }
-        
+
         data.extend(row_values);
         num_rows += 1;
     }
-    
-    if num_rows == 0 {
-        return Err(format!("CSV file '{}' is empty or contains no data", path));
-    }
-    
-    let cols = num_cols.unwrap_or(1);
-    let shape = if cols == 1 {
-        vec![num_rows]  // 1D tensor for single column
-    } else {
-        vec![num_rows, cols]  // 2D tensor for multiple columns
-    };
-    
+
+    let cols = num_cols.unwrap_or(0);
+    let shape = if cols == 0 { vec![0] } else { vec![num_rows, cols] };
     Ok((data, shape))
 }
 

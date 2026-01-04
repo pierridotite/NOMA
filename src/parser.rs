@@ -213,8 +213,10 @@ impl Parser {
             TokenType::LoadCsv => self.parse_load_csv(),
             TokenType::SaveCsv => self.parse_save_csv(),
             TokenType::LoadSafetensors => self.parse_load_safetensors(),
+            TokenType::LoadSafetensorsNamed => self.parse_load_safetensors_named(),
             TokenType::SaveSafetensors => self.parse_save_safetensors(),
             TokenType::Batch => self.parse_batch_loop(),
+            TokenType::Epoch => self.parse_epoch_loop(),
             _ => {
                 // Handle assignment: identifier '=' expr;
                 if matches!(self.peek().token_type, TokenType::Identifier(_)) && matches!(self.peek_next().map(|t| &t.token_type), Some(TokenType::Assign)) {
@@ -429,6 +431,20 @@ impl Parser {
         Ok(Statement::LoadSafetensors { name, path })
     }
 
+    /// Parse 'load_safetensors_named' statement: load_safetensors_named name = "path.safetensors" : "tensor_name";
+    fn parse_load_safetensors_named(&mut self) -> Result<Statement, NomaError> {
+        self.consume(TokenType::LoadSafetensorsNamed, "Expected 'load_safetensors_named'")?;
+        let name = self.parse_identifier("Expected variable name")?;
+        self.consume(TokenType::Assign, "Expected '='")?;
+
+        let path = self.parse_string_literal("Expected file path string")?;
+        self.consume(TokenType::Colon, "Expected ':' before tensor name")?;
+        let tensor_name = self.parse_string_literal("Expected tensor name string")?;
+        self.consume(TokenType::Semicolon, "Expected ';'")?;
+        
+        Ok(Statement::LoadSafetensorsNamed { name, path, tensor_name })
+    }
+
     /// Parse 'save_safetensors' statement: save_safetensors { name1: tensor1, name2: tensor2 }, "path.safetensors";
     fn parse_save_safetensors(&mut self) -> Result<Statement, NomaError> {
         self.consume(TokenType::SaveSafetensors, "Expected 'save_safetensors'")?;
@@ -495,6 +511,66 @@ impl Parser {
             index_name,
             data,
             batch_size,
+            body,
+        })
+    }
+
+    /// Parse epoch training loop: epoch N batch X, Y with batch_size -> x_batch, y_batch { body }
+    /// This runs N epochs where each epoch processes all data in mini-batches with weight updates per batch
+    fn parse_epoch_loop(&mut self) -> Result<Statement, NomaError> {
+        self.consume(TokenType::Epoch, "Expected 'epoch'")?;
+        
+        // Parse number of epochs
+        let epochs = self.parse_expression()?;
+        
+        // Expect 'batch' keyword
+        self.consume(TokenType::Batch, "Expected 'batch' after epoch count")?;
+        
+        // Parse X data expression
+        let x_data = self.parse_expression()?;
+        
+        // Expect comma
+        self.consume(TokenType::Comma, "Expected ',' between X and Y data")?;
+        
+        // Parse Y data expression
+        let y_data = self.parse_expression()?;
+        
+        // Parse 'with batch_size'
+        if !matches!(self.peek().token_type, TokenType::Identifier(ref s) if s == "with") {
+            return Err(NomaError::ParseError {
+                message: "Expected 'with' for batch size".to_string(),
+                line: self.peek().line,
+                column: self.peek().column,
+            });
+        }
+        self.advance(); // consume 'with'
+        
+        // Parse batch_size as primary expression only (number or identifier)
+        let batch_size = self.parse_primary()?;
+        
+        // Expect '->' arrow for batch variable names
+        self.consume(TokenType::Arrow, "Expected '->' before batch variable names")?;
+        
+        // Parse x_batch name
+        let x_batch_name = self.parse_identifier("Expected x_batch variable name")?;
+        
+        // Expect comma
+        self.consume(TokenType::Comma, "Expected ',' between batch variable names")?;
+        
+        // Parse y_batch name
+        let y_batch_name = self.parse_identifier("Expected y_batch variable name")?;
+        
+        // Parse body
+        self.consume(TokenType::LBrace, "Expected '{' after epoch header")?;
+        let body = self.parse_block()?;
+        
+        Ok(Statement::EpochLoop {
+            epochs,
+            x_data,
+            y_data,
+            batch_size,
+            x_batch_name,
+            y_batch_name,
             body,
         })
     }

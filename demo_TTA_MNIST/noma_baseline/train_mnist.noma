@@ -1,0 +1,63 @@
+// NOMA Static Baseline - Balanced Training (5k samples)
+// Architecture: 784 -> 128 -> 10
+// Uses mini-batch SGD with Adam optimizer
+
+fn main() {
+    let optimizer = 2.0;       // Adam
+    let learning_rate = 0.001;
+    let beta1 = 0.9;
+    let beta2 = 0.999;
+    let epsilon = 0.00000001;
+    
+    let batch_size = 1024.0;
+    let epochs = 5.0;
+
+    print("=== NOMA Baseline Training ===");
+    print("Architecture: 784 -> 128 -> 10");
+    print("Loading 60000 training samples...");
+
+    // Load Training Data - FULL 60k
+    // Paths are relative to the demo_TTA_MNIST folder (run_pipeline.sh cds there)
+    load_safetensors_named X_train = "noma_baseline/data/mnist_train.safetensors" : "x";
+    load_safetensors_named Y_train = "noma_baseline/data/mnist_train.safetensors" : "y_onehot";
+    
+    print("Initializing network...");
+    
+    // Layer 1: 784 -> 128 (with ReLU)
+    learn W1 = xavier_init(784.0, 128.0, 784.0, 128.0);
+    learn b1 = rand_tensor(1.0, 128.0) * 0.01;
+    
+    // Layer 2: 128 -> 10 (output layer)
+    learn W2 = xavier_init(128.0, 10.0, 128.0, 10.0);
+    learn b2 = rand_tensor(1.0, 10.0) * 0.01;
+
+    print("Starting mini-batch training...");
+
+    // Mini-Batch Training with Epoch Loop
+    epoch epochs batch X_train, Y_train with batch_size -> x_batch, y_batch {
+        // Forward pass
+        let z1 = matmul(x_batch, W1) + b1;
+        let h1 = relu(z1);
+        let z2 = matmul(h1, W2) + b2;
+        let pred = softmax(z2);
+        
+        // MSE Loss
+        let error = pred - y_batch;
+        let loss = mean(error * error);
+        
+        minimize loss;
+    }
+
+    print("Training complete!");
+
+    // Save model
+    save_safetensors {
+        W1: W1,
+        b1: b1,
+        W2: W2,
+        b2: b2
+    }, "noma_baseline/output/model_weights.safetensors";
+    
+    print("Model saved!");
+    return loss;
+}

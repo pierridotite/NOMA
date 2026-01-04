@@ -1,0 +1,12 @@
+{
+  "source": "MNIST",
+  "split": "train",
+  "n_samples": 60000,
+  "n_subset": 1000,
+  "image_shape": [
+    784
+  ],
+  "num_classes": 10,
+  "seed": 42,
+  "created": "2026-01-04T19:27:50.931370"
+}
