@@ -11,6 +11,10 @@ Cargo.lock
 *.swo
 *~
 
+#demo
+demo_TTA_MNIST/sequencer/mnist_stream
+demo_TTA_MNIST/sequencer/mnist_data
+
 # OS
 .DS_Store
 Thumbs.db
