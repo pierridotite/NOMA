@@ -486,6 +486,233 @@ fn lower_statements_shared(
                 
                 println!("Epoch training complete!");
             }
+            noma_compiler::Statement::StreamingAdaptLoop { 
+                x_data, y_data, batch_size, x_batch_name, y_batch_name, 
+                predict_body, prediction_output, adapt_body 
+            } => {
+                // ============================================================
+                // STREAMING TTA: Causal predict-then-adapt loop
+                // For each batch:
+                //   1. PREDICT with current model state (no gradients)
+                //   2. Store predictions
+                //   3. ADAPT using labels (compute gradients, update weights)
+                // This ensures each prediction uses model state BEFORE seeing that batch
+                // ============================================================
+                
+                // Evaluate X and Y data tensors
+                let x_data_id = graph.build_from_expression_with_functions(x_data, variables, func_registry)?;
+                let y_data_id = graph.build_from_expression_with_functions(y_data, variables, func_registry)?;
+                graph.forward_pass()?;
+                
+                let x_val = graph.get_node(x_data_id)
+                    .and_then(|n| n.value.clone())
+                    .ok_or_else(|| "Cannot evaluate X data for streaming_adapt loop".to_string())?;
+                let y_val = graph.get_node(y_data_id)
+                    .and_then(|n| n.value.clone())
+                    .ok_or_else(|| "Cannot evaluate Y data for streaming_adapt loop".to_string())?;
+                
+                // Evaluate batch size
+                let batch_size_id = graph.build_from_expression_with_functions(batch_size, variables, func_registry)?;
+                graph.forward_pass()?;
+                let batch_size_val = graph.get_node(batch_size_id)
+                    .and_then(|n| n.value.clone())
+                    .and_then(|v| v.as_scalar())
+                    .ok_or_else(|| "Batch size must be a scalar".to_string())? as usize;
+                
+                if batch_size_val == 0 {
+                    return Err("Batch size cannot be zero".to_string());
+                }
+                
+                // Extract tensor data
+                let (x_tensor_data, x_tensor_shape) = match &x_val {
+                    noma_compiler::Value::Tensor(t) => (t.data.clone(), t.shape.clone()),
+                    noma_compiler::Value::Scalar(s) => (vec![*s], vec![1]),
+                };
+                let (y_tensor_data, y_tensor_shape) = match &y_val {
+                    noma_compiler::Value::Tensor(t) => (t.data.clone(), t.shape.clone()),
+                    noma_compiler::Value::Scalar(s) => (vec![*s], vec![1]),
+                };
+                
+                let num_samples = if x_tensor_shape.is_empty() { 1 } else { x_tensor_shape[0] };
+                let num_batches = (num_samples + batch_size_val - 1) / batch_size_val;
+                
+                // Get optimizer config
+                let (config, _) = pick_hyperparams(graph, variables, 0.01, 1);
+                
+                // Compute row sizes
+                let x_row_size: usize = if x_tensor_shape.len() > 1 { x_tensor_shape[1..].iter().product() } else { 1 };
+                let y_row_size: usize = if y_tensor_shape.len() > 1 { y_tensor_shape[1..].iter().product() } else { 1 };
+                
+                println!("Starting streaming TTA: {} samples, batch_size={}, {} batches", 
+                         num_samples, batch_size_val, num_batches);
+                println!("Mode: CAUSAL (predict BEFORE adapt on each batch)");
+                
+                // First batch to set up graph structure
+                let first_batch_size = batch_size_val.min(num_samples);
+                let x_first_batch: Vec<f64> = x_tensor_data[0..first_batch_size * x_row_size].to_vec();
+                let y_first_batch: Vec<f64> = y_tensor_data[0..first_batch_size * y_row_size].to_vec();
+                
+                let x_batch_shape_template = if x_tensor_shape.len() == 1 {
+                    vec![first_batch_size]
+                } else {
+                    let mut shape = vec![first_batch_size];
+                    shape.extend(&x_tensor_shape[1..]);
+                    shape
+                };
+                let y_batch_shape_template = if y_tensor_shape.len() == 1 {
+                    vec![first_batch_size]
+                } else {
+                    let mut shape = vec![first_batch_size];
+                    shape.extend(&y_tensor_shape[1..]);
+                    shape
+                };
+                
+                // Create batch nodes
+                let x_batch_node = graph.add_constant_tensor(x_first_batch, x_batch_shape_template.clone())?;
+                let y_batch_node = graph.add_constant_tensor(y_first_batch, y_batch_shape_template.clone())?;
+                variables.insert(x_batch_name.clone(), x_batch_node);
+                variables.insert(y_batch_name.clone(), y_batch_node);
+                
+                // ============================================================
+                // Build PREDICT graph (just forward pass, store predictions)
+                // ============================================================
+                let mut predict_last: Option<noma_compiler::NodeId> = None;
+                let mut predict_output_node: Option<noma_compiler::NodeId> = None;
+                
+                for stmt in predict_body {
+                    match stmt {
+                        noma_compiler::Statement::LetDeclaration { name, value } => {
+                            let node_id = graph.build_from_expression_with_functions(value, variables, func_registry)?;
+                            variables.insert(name.clone(), node_id);
+                            predict_last = Some(node_id);
+                            predict_output_node = Some(node_id);
+                        }
+                        _ => {
+                            lower_statements_shared(graph, variables, &[stmt.clone()], &mut predict_last, func_registry, optimizer_state)?;
+                        }
+                    }
+                }
+                
+                let pred_node = predict_output_node.ok_or_else(|| 
+                    "streaming_adapt predict block must contain at least one let statement for output".to_string())?;
+                
+                // ============================================================
+                // Build ADAPT graph (forward + backward + optimize)
+                // ============================================================
+                let mut adapt_last: Option<noma_compiler::NodeId> = None;
+                let mut loss_node_id: Option<noma_compiler::NodeId> = None;
+                
+                for stmt in adapt_body {
+                    match stmt {
+                        noma_compiler::Statement::Minimize(expr) => {
+                            let loss_id = graph.build_from_expression_with_functions(expr, variables, func_registry)?;
+                            loss_node_id = Some(loss_id);
+                            adapt_last = Some(loss_id);
+                        }
+                        _ => {
+                            lower_statements_shared(graph, variables, &[stmt.clone()], &mut adapt_last, func_registry, optimizer_state)?;
+                        }
+                    }
+                }
+                
+                let loss_id = loss_node_id.ok_or_else(|| 
+                    "streaming_adapt adapt block must contain a minimize statement".to_string())?;
+                
+                // Storage for all predictions
+                let mut all_predictions: Vec<f64> = Vec::new();
+                let mut total_loss = 0.0;
+                let mut batch_count = 0;
+                
+                // Suppress print output during the streaming loop
+                graph.set_suppress_print(true);
+                
+                // ============================================================
+                // Main streaming loop: PREDICT then ADAPT for each batch
+                // ============================================================
+                for batch_idx in 0..num_batches {
+                    let start = batch_idx * batch_size_val;
+                    let end = (start + batch_size_val).min(num_samples);
+                    let actual_batch_size = end - start;
+                    
+                    // Skip if batch size differs
+                    if actual_batch_size != first_batch_size {
+                        continue;
+                    }
+                    
+                    // Extract batch data
+                    let x_batch_data: Vec<f64> = x_tensor_data[start * x_row_size..end * x_row_size].to_vec();
+                    let y_batch_data: Vec<f64> = y_tensor_data[start * y_row_size..end * y_row_size].to_vec();
+                    
+                    // Update batch values
+                    graph.update_node_value(x_batch_node, x_batch_data, x_batch_shape_template.clone())?;
+                    graph.update_node_value(y_batch_node, y_batch_data, y_batch_shape_template.clone())?;
+                    
+                    // ============================================================
+                    // STEP 1: PREDICT (forward only, store predictions)
+                    // ============================================================
+                    graph.forward_pass()?;
+                    
+                    // Store predictions from this batch
+                    if let Some(node) = graph.get_node(pred_node) {
+                        if let Some(val) = &node.value {
+                            match val {
+                                noma_compiler::Value::Tensor(t) => {
+                                    all_predictions.extend(&t.data);
+                                }
+                                noma_compiler::Value::Scalar(s) => {
+                                    all_predictions.push(*s);
+                                }
+                            }
+                        }
+                    }
+                    
+                    // ============================================================
+                    // STEP 2: ADAPT (backward + update weights)
+                    // ============================================================
+                    // Re-run forward to ensure loss is computed
+                    graph.forward_pass()?;
+                    
+                    // Get loss for logging
+                    if let Some(node) = graph.get_node(loss_id) {
+                        if let Some(noma_compiler::Value::Scalar(loss)) = &node.value {
+                            total_loss += loss;
+                            batch_count += 1;
+                        }
+                    }
+                    
+                    // Backward and update
+                    graph.backward_pass(loss_id)?;
+                    graph.optimize_step_with_config(optimizer_state, &config)?;
+                    graph.reset_gradients();
+                    
+                    // Progress update
+                    if batch_idx % 10 == 0 {
+                        let progress = (batch_idx + 1) as f64 / num_batches as f64 * 100.0;
+                        eprintln!("  [{:>5.1}%] batch {}/{} | avg_loss: {:.6}", 
+                               progress, batch_idx + 1, num_batches, 
+                               if batch_count > 0 { total_loss / batch_count as f64 } else { 0.0 });
+                    }
+                }
+                
+                // Re-enable print output after loop
+                graph.set_suppress_print(false);
+                
+                // Store accumulated predictions as output tensor
+                let pred_shape = if y_tensor_shape.len() > 1 {
+                    let mut shape = vec![batch_count * first_batch_size];
+                    shape.extend(&y_tensor_shape[1..]);
+                    shape
+                } else {
+                    vec![all_predictions.len()]
+                };
+                
+                let output_node = graph.add_constant_tensor(all_predictions.clone(), pred_shape)?;
+                variables.insert(prediction_output.clone(), output_node);
+                
+                let avg_loss = if batch_count > 0 { total_loss / batch_count as f64 } else { 0.0 };
+                println!("\n✓ Streaming TTA complete: {} batches processed, avg_loss = {:.6}", batch_count, avg_loss);
+                println!("  Predictions stored in '{}'", prediction_output);
+            }
             noma_compiler::Statement::ResetOptimizer => {
                 // Clear all optimizer state (m, v, t) to restart from scratch
                 optimizer_state.reset();

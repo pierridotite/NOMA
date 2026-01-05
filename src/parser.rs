@@ -217,6 +217,7 @@ impl Parser {
             TokenType::SaveSafetensors => self.parse_save_safetensors(),
             TokenType::Batch => self.parse_batch_loop(),
             TokenType::Epoch => self.parse_epoch_loop(),
+            TokenType::StreamingAdapt => self.parse_streaming_adapt_loop(),
             _ => {
                 // Handle assignment: identifier '=' expr;
                 if matches!(self.peek().token_type, TokenType::Identifier(_)) && matches!(self.peek_next().map(|t| &t.token_type), Some(TokenType::Assign)) {
@@ -572,6 +573,74 @@ impl Parser {
             x_batch_name,
             y_batch_name,
             body,
+        })
+    }
+
+    /// Parse streaming_adapt loop for causal test-time adaptation
+    /// Syntax:
+    ///   streaming_adapt X, Y with batch_size -> x_batch, y_batch
+    ///       predict { body } -> prediction_var
+    ///       adapt { body with minimize }
+    fn parse_streaming_adapt_loop(&mut self) -> Result<Statement, NomaError> {
+        self.consume(TokenType::StreamingAdapt, "Expected 'streaming_adapt'")?;
+        
+        // Parse X data expression
+        let x_data = self.parse_expression()?;
+        
+        // Expect comma
+        self.consume(TokenType::Comma, "Expected ',' between X and Y data")?;
+        
+        // Parse Y data expression
+        let y_data = self.parse_expression()?;
+        
+        // Parse 'with batch_size'
+        if !matches!(self.peek().token_type, TokenType::Identifier(ref s) if s == "with") {
+            return Err(NomaError::ParseError {
+                message: "Expected 'with' for batch size".to_string(),
+                line: self.peek().line,
+                column: self.peek().column,
+            });
+        }
+        self.advance(); // consume 'with'
+        
+        // Parse batch_size as primary expression only (number or identifier)
+        let batch_size = self.parse_primary()?;
+        
+        // Expect '->' arrow for batch variable names
+        self.consume(TokenType::Arrow, "Expected '->' before batch variable names")?;
+        
+        // Parse x_batch name
+        let x_batch_name = self.parse_identifier("Expected x_batch variable name")?;
+        
+        // Expect comma
+        self.consume(TokenType::Comma, "Expected ',' between batch variable names")?;
+        
+        // Parse y_batch name
+        let y_batch_name = self.parse_identifier("Expected y_batch variable name")?;
+        
+        // Parse 'predict' block
+        self.consume(TokenType::Predict, "Expected 'predict' keyword")?;
+        self.consume(TokenType::LBrace, "Expected '{' after predict")?;
+        let predict_body = self.parse_block()?;
+        
+        // Parse '->' and prediction output variable name
+        self.consume(TokenType::Arrow, "Expected '->' after predict block")?;
+        let prediction_output = self.parse_identifier("Expected prediction output variable name")?;
+        
+        // Parse 'adapt' block
+        self.consume(TokenType::Adapt, "Expected 'adapt' keyword")?;
+        self.consume(TokenType::LBrace, "Expected '{' after adapt")?;
+        let adapt_body = self.parse_block()?;
+        
+        Ok(Statement::StreamingAdaptLoop {
+            x_data,
+            y_data,
+            batch_size,
+            x_batch_name,
+            y_batch_name,
+            predict_body,
+            prediction_output,
+            adapt_body,
         })
     }
 

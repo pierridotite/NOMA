@@ -1,0 +1,37 @@
+// Baseline: Frozen backbone, no adaptation
+// Evaluates backbone on full stream without any TTA
+
+fn main() {
+    print("Baseline evaluation (no TTA)...");
+    
+    // Load backbone
+    load_safetensors_named W1 = "output/backbone_weights.safetensors" : "W1";
+    load_safetensors_named b1 = "output/backbone_weights.safetensors" : "b1";
+    load_safetensors_named W2 = "output/backbone_weights.safetensors" : "W2";
+    load_safetensors_named b2 = "output/backbone_weights.safetensors" : "b2";
+    
+    // Load stream data
+    load_safetensors_named X = "data/stream_full.safetensors" : "x";
+    load_safetensors_named Y = "data/stream_full.safetensors" : "y";
+    load_safetensors_named T = "data/stream_full.safetensors" : "t";
+    load_safetensors_named Phase = "data/stream_full.safetensors" : "phase";
+    load_safetensors_named Intensity = "data/stream_full.safetensors" : "intensity";
+    
+    // Forward pass
+    let z1 = matmul(X, W1) + b1;
+    let h1 = relu(z1);
+    let z2 = matmul(h1, W2) + b2;
+    let pred = softmax(z2);
+    
+    // Save results
+    save_safetensors {
+        pred_probs: pred,
+        y_true: Y,
+        t: T,
+        phase: Phase,
+        intensity: Intensity
+    }, "output/eval_baseline.safetensors";
+    
+    print("Baseline results saved.");
+    return 0.0;
+}

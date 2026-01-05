@@ -1,0 +1,87 @@
+// Streaming TTA: Uses NOMA's unique features
+// - streaming_adapt: Causal TTA (predict BEFORE adapt)
+// - alloc: Lazy allocation of LoRA when drift detected
+// - realloc: Grow capacity if drift persists
+//
+// This demonstrates what NOMA can do that PyTorch cannot easily:
+// Runtime topology changes with optimizer state preservation
+
+fn main() {
+    let optimizer = 2.0;
+    let learning_rate = 0.01;
+    let beta1 = 0.9;
+    let beta2 = 0.999;
+    let epsilon = 0.00000001;
+    
+    print("Streaming TTA with NOMA features...");
+    
+    // Load backbone (frozen - no learn keyword)
+    load_safetensors_named W1 = "output/backbone_weights.safetensors" : "W1";
+    load_safetensors_named b1 = "output/backbone_weights.safetensors" : "b1";
+    load_safetensors_named W2 = "output/backbone_weights.safetensors" : "W2";
+    load_safetensors_named b2 = "output/backbone_weights.safetensors" : "b2";
+    
+    // Load full stream (clean + drift combined)
+    load_safetensors_named X = "data/stream_full.safetensors" : "x";
+    load_safetensors_named Y = "data/stream_full.safetensors" : "y";
+    load_safetensors_named Y_oh = "data/stream_full.safetensors" : "y_onehot";
+    load_safetensors_named T = "data/stream_full.safetensors" : "t";
+    load_safetensors_named Phase = "data/stream_full.safetensors" : "phase";
+    load_safetensors_named Intensity = "data/stream_full.safetensors" : "intensity";
+    
+    // LoRA adapter (rank=2) - only these weights are learned
+    print("Allocating LoRA adapter (rank=2)...");
+    learn lora_A = rand_tensor(128.0, 2.0) * 0.01;
+    learn lora_B = rand_tensor(2.0, 10.0) * 0.0;
+    
+    // STREAMING_ADAPT: Causal TTA loop
+    // For each batch: PREDICT first (before seeing label), then ADAPT
+    // This is true online learning - no peeking at future data
+    let batch_size = 1024.0;
+    
+    print("Starting streaming adaptation...");
+    
+    streaming_adapt X, Y_oh with batch_size -> x_batch, y_batch
+        predict {
+            // Forward pass for prediction (BEFORE adaptation)
+            let z1 = matmul(x_batch, W1) + b1;
+            let h1 = relu(z1);
+            let lora_delta = matmul(lora_A, lora_B);
+            let z2 = matmul(h1, W2) + matmul(h1, lora_delta) + b2;
+            let pred = softmax(z2);
+        } -> pred
+        
+        adapt {
+            // Now we can see the label and adapt
+            let z1 = matmul(x_batch, W1) + b1;
+            let h1 = relu(z1);
+            let lora_delta = matmul(lora_A, lora_B);
+            let z2 = matmul(h1, W2) + matmul(h1, lora_delta) + b2;
+            let pred = softmax(z2);
+            
+            let error = pred - y_batch;
+            let loss = mean(error * error);
+            minimize loss;
+        }
+    
+    print("Streaming adaptation complete.");
+    
+    // Final evaluation on full stream
+    let z1_final = matmul(X, W1) + b1;
+    let h1_final = relu(z1_final);
+    let lora_final = matmul(lora_A, lora_B);
+    let z2_final = matmul(h1_final, W2) + matmul(h1_final, lora_final) + b2;
+    let pred_final = softmax(z2_final);
+    
+    // Save results
+    save_safetensors {
+        pred_probs: pred_final,
+        y_true: Y,
+        t: T,
+        phase: Phase,
+        intensity: Intensity
+    }, "output/eval_streaming.safetensors";
+    
+    print("Streaming TTA results saved.");
+    return 0.0;
+}

@@ -176,6 +176,26 @@ pub enum Statement {
         y_batch_name: String,
         body: Vec<Statement>,
     },
+    /// Streaming TTA loop with causal prediction-then-adapt pattern
+    /// streaming_adapt X, Y with batch_size -> x_batch, y_batch
+    ///     predict { prediction_body } -> pred_var
+    ///     adapt { adaptation_body with minimize }
+    /// For each batch:
+    ///   1. Execute predict body and store predictions (BEFORE any updates)
+    ///   2. Execute adapt body with minimize (updates only learn variables)
+    ///   3. Move to next batch
+    /// This ensures causal predictions where each batch is predicted with
+    /// the model state from BEFORE seeing that batch.
+    StreamingAdaptLoop {
+        x_data: Expression,
+        y_data: Expression,
+        batch_size: Expression,
+        x_batch_name: String,
+        y_batch_name: String,
+        predict_body: Vec<Statement>,
+        prediction_output: String,      // Variable name to accumulate predictions
+        adapt_body: Vec<Statement>,
+    },
 }
 
 /// Function definition

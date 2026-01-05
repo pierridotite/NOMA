@@ -277,6 +277,8 @@ pub struct ComputationalGraph {
     learnables: Vec<String>,
     /// Track heap-allocated tensors for memory management
     heap_allocations: HashMap<String, NodeId>,
+    /// Suppress print output during loops (e.g., streaming_adapt)
+    suppress_print: bool,
 }
 
 impl ComputationalGraph {
@@ -286,7 +288,13 @@ impl ComputationalGraph {
             next_id: 0,
             learnables: Vec::new(),
             heap_allocations: HashMap::new(),
+            suppress_print: false,
         }
+    }
+    
+    /// Set whether to suppress print output (useful during loops)
+    pub fn set_suppress_print(&mut self, suppress: bool) {
+        self.suppress_print = suppress;
     }
 
     pub fn add_constant(&mut self, value: f64) -> NodeId {
@@ -783,7 +791,24 @@ impl ComputationalGraph {
                             .ok_or_else(|| format!("Realloc dimension must be a scalar for '{}'", name))?;
                         dims.push(dim_val);
                     }
-                    let node_id = self.realloc_heap_tensor(name, dims)?;
+                    
+                    // Try heap tensor first, then learnable tensor
+                    let node_id = if self.heap_allocations.contains_key(name) {
+                        self.realloc_heap_tensor(name, dims)?
+                    } else if let Some(&var_id) = variables.get(name) {
+                        // Check if it's a learnable tensor
+                        if let Some(node) = self.get_node(var_id) {
+                            if matches!(node.node_type, NodeType::Learnable(_)) {
+                                self.realloc_learnable_tensor_by_id(var_id, dims)?
+                            } else {
+                                return Err(format!("Cannot realloc '{}': not a heap or learnable tensor", name));
+                            }
+                        } else {
+                            return Err(format!("Cannot realloc '{}': variable not found", name));
+                        }
+                    } else {
+                        return Err(format!("Cannot realloc '{}': not a heap-allocated or learnable tensor", name));
+                    };
                     variables.insert(name.clone(), node_id);
                     last_node = Some(node_id);
                 }
@@ -917,6 +942,10 @@ impl ComputationalGraph {
                 Statement::EpochLoop { .. } => {
                     // EpochLoop is handled at runtime by main.rs, not in the graph
                     return Err("EpochLoop not supported inside user functions".to_string());
+                }
+                Statement::StreamingAdaptLoop { .. } => {
+                    // StreamingAdaptLoop is handled at runtime by main.rs, not in the graph
+                    return Err("StreamingAdaptLoop not supported inside user functions".to_string());
                 }
             }
         }
@@ -1104,9 +1133,11 @@ impl ComputationalGraph {
                         "print" => {
                             if inputs.len() != 1 { return Err("print expects 1 argument".to_string()); }
                             let val = self.nodes.get(&inputs[0]).and_then(|n| n.value.clone()).ok_or("Missing argument")?;
-                            match &val {
-                                Value::Scalar(s) => println!("[print] {}", s),
-                                Value::Tensor(t) => println!("[print] tensor {:?}: {:?}", t.shape, if t.data.len() > 16 { &t.data[..16] } else { &t.data[..] }),
+                            if !self.suppress_print {
+                                match &val {
+                                    Value::Scalar(s) => println!("[print] {}", s),
+                                    Value::Tensor(t) => println!("[print] tensor {:?}: {:?}", t.shape, if t.data.len() > 16 { &t.data[..16] } else { &t.data[..] }),
+                                }
                             }
                             if let Some(node) = self.nodes.get_mut(&node_id) { node.value = Some(val); }
                         }

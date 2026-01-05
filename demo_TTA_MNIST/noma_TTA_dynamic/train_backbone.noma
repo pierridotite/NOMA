@@ -1,0 +1,46 @@
+// Train backbone model on clean MNIST
+// Output: backbone_weights.safetensors
+
+fn main() {
+    let optimizer = 2.0;
+    let learning_rate = 0.001;
+    let beta1 = 0.9;
+    let beta2 = 0.999;
+    let epsilon = 0.00000001;
+    
+    print("Training backbone on clean MNIST...");
+    
+    load_safetensors_named X = "data/mnist_train.safetensors" : "x";
+    load_safetensors_named Y = "data/mnist_train.safetensors" : "y_onehot";
+    
+    // Network: 784 -> 128 -> 10
+    learn W1 = xavier_init(784.0, 128.0, 784.0, 128.0);
+    learn b1 = rand_tensor(1.0, 128.0) * 0.01;
+    learn W2 = xavier_init(128.0, 10.0, 128.0, 10.0);
+    learn b2 = rand_tensor(1.0, 10.0) * 0.01;
+    
+    let epochs = 5.0;
+    let batch_size = 1024.0;
+    
+    epoch epochs batch X, Y with batch_size -> x_batch, y_batch {
+        let z1 = matmul(x_batch, W1) + b1;
+        let h1 = relu(z1);
+        let z2 = matmul(h1, W2) + b2;
+        let pred = softmax(z2);
+        
+        let error = pred - y_batch;
+        let loss = mean(error * error);
+        minimize loss;
+    }
+    
+    print("Saving backbone weights...");
+    save_safetensors {
+        W1: W1,
+        b1: b1,
+        W2: W2,
+        b2: b2
+    }, "output/backbone_weights.safetensors";
+    
+    print("Done.");
+    return 0.0;
+}

@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Test-Time Adaptation (TTA) demo : Complete demonstration of TTA on MNIST with baseline, control, and causal variants
 - Jupyter notebook extension with `%%noma` cell magic for executing NOMA code in notebooks
 - Automatic compilation caching based on SHA256 hash
 - Execution logging and artifact management for notebook workflows

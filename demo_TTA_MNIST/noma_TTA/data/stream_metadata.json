@@ -1,0 +1,23 @@
+{
+  "source": "mnist_stream",
+  "n_samples": 60000,
+  "n_clean": 30000,
+  "n_drift": 30000,
+  "t0": 30000,
+  "image_shape": [
+    784
+  ],
+  "original_image_shape": [
+    1,
+    28,
+    28
+  ],
+  "perturbation_type": "gaussian_noise",
+  "max_intensity": 0.8,
+  "created": "2026-01-04T21:19:52.125862",
+  "files": {
+    "full_stream": "mnist_stream_full.safetensors",
+    "clean_phase": "stream_clean.safetensors",
+    "drift_phase": "stream_drift.safetensors"
+  }
+}

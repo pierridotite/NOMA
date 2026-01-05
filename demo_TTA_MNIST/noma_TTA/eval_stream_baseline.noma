@@ -1,0 +1,64 @@
+// NOMA TTA - Baseline Streaming Evaluation (No Adaptation)
+// Evaluates frozen backbone on stream - serves as control
+// Identical behavior to noma_baseline/eval_stream.noma
+
+fn main() {
+    print("=== NOMA TTA - Baseline (No Adaptation) ===");
+    
+    // =========================================================================
+    // Load Frozen Backbone Weights
+    // =========================================================================
+    print("Loading frozen backbone weights...");
+    load_safetensors_named W1 = "noma_TTA/output/backbone_weights.safetensors" : "W1";
+    load_safetensors_named b1 = "noma_TTA/output/backbone_weights.safetensors" : "b1";
+    load_safetensors_named W2 = "noma_TTA/output/backbone_weights.safetensors" : "W2";
+    load_safetensors_named b2 = "noma_TTA/output/backbone_weights.safetensors" : "b2";
+    print("Backbone loaded (784 -> 128 -> 10).");
+    
+    // =========================================================================
+    // Load Streaming Data
+    // =========================================================================
+    print("Loading streaming data...");
+    load_safetensors_named X_stream = "noma_TTA/data/mnist_stream_full.safetensors" : "x";
+    load_safetensors_named Y_stream = "noma_TTA/data/mnist_stream_full.safetensors" : "y";
+    load_safetensors_named T_stream = "noma_TTA/data/mnist_stream_full.safetensors" : "t";
+    load_safetensors_named Phase_stream = "noma_TTA/data/mnist_stream_full.safetensors" : "phase";
+    load_safetensors_named Intensity_stream = "noma_TTA/data/mnist_stream_full.safetensors" : "intensity";
+    
+    print("Stream loaded: 60000 samples");
+    print("  t0 = 30000 (distribution shift point)");
+    
+    // =========================================================================
+    // Full Evaluation (vectorized for efficiency)
+    // =========================================================================
+    print("Running baseline evaluation (no adaptation)...");
+    
+    // Forward pass on entire dataset (frozen backbone)
+    let z1 = matmul(X_stream, W1) + b1;
+    let h1 = relu(z1);
+    let z2 = matmul(h1, W2) + b2;
+    let pred_probs = softmax(z2);
+    
+    print("Evaluation complete.");
+    
+    // =========================================================================
+    // Save Results for Post-Processing
+    // =========================================================================
+    print("Saving results...");
+    save_safetensors {
+        pred_probs: pred_probs,
+        y_true: Y_stream,
+        t: T_stream,
+        phase: Phase_stream,
+        intensity: Intensity_stream,
+        W1_final: W1,
+        b1_final: b1,
+        W2_final: W2,
+        b2_final: b2
+    }, "noma_TTA/output/eval_baseline_results.safetensors";
+    
+    print("Results saved to: noma_TTA/output/eval_baseline_results.safetensors");
+    print("=== Baseline Evaluation Complete ===");
+    
+    return 0.0;
+}

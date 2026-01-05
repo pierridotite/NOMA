@@ -34,6 +34,9 @@ pub enum TokenType {
     Batch,       // batch
     In,          // in
     Epoch,       // epoch
+    StreamingAdapt, // streaming_adapt
+    Predict,     // predict
+    Adapt,       // adapt
     
     // Types
     Tensor,      // tensor
@@ -126,6 +129,9 @@ impl fmt::Display for TokenType {
             TokenType::Batch => write!(f, "batch"),
             TokenType::In => write!(f, "in"),
             TokenType::Epoch => write!(f, "epoch"),
+            TokenType::StreamingAdapt => write!(f, "streaming_adapt"),
+            TokenType::Predict => write!(f, "predict"),
+            TokenType::Adapt => write!(f, "adapt"),
             TokenType::Tensor => write!(f, "tensor"),
             TokenType::Identifier(name) => write!(f, "identifier({})", name),
             TokenType::Number(n) => write!(f, "number({})", n),

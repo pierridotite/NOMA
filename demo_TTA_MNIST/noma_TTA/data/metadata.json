@@ -1,0 +1,10 @@
+{
+  "source": "mnist",
+  "split": "train",
+  "n_samples": 60000,
+  "image_shape": [
+    784
+  ],
+  "n_classes": 10,
+  "created": "2026-01-04T21:19:48.853325"
+}

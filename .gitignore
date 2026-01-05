@@ -14,6 +14,14 @@ Cargo.lock
 #demo
 demo_TTA_MNIST/sequencer/mnist_stream
 demo_TTA_MNIST/sequencer/mnist_data
+demo_TTA_MNIST/noma_TTA/data/*.safetensors
+demo_TTA_MNIST/noma_TTA/output/*.csv
+demo_TTA_MNIST/noma_TTA/output/*.json
+demo_TTA_MNIST/noma_TTA/output/*.safetensors
+demo_TTA_MNIST/noma_TTA_dynamic/data/*.safetensors
+demo_TTA_MNIST/noma_TTA_dynamic/output/*.csv
+demo_TTA_MNIST/noma_TTA_dynamic/output/*.json
+demo_TTA_MNIST/noma_TTA_dynamic/output/*.safetensors
 demo_TTA_MNIST/noma_baseline/data/*.safetensors
 demo_TTA_MNIST/noma_baseline/output/*.csv
 demo_TTA_MNIST/noma_baseline/output/*.json
